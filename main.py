@@ -217,16 +217,29 @@ def get_analysis_df(case_query, control_query, modifier_query=""):
     # Fetch all relevant data
     queries = [case_query, control_query, modifier_query]
     tokens = set(cat(re_all('[a-zA-Z]\w*', query) for query in queries))
-
-    tags = Tag.objects.filter(tag_name__iregex='^(%s)$' % '|'.join(map(re.escape, tokens)))
-    qs = SampleAnnotation.objects.filter(serie_annotation__tag__in=tags)
-    df = qs.to_dataframe(COLUMNS.keys()).rename(columns=COLUMNS)
-
+    df = pd.read_sql_query('''
+            SELECT
+                sample_id,
+                sample.gsm_name,
+                annotation,
+                series_annotation.series_id,
+                series_annotation.platform_id,
+                platform.gpl_name,
+                tag.tag_name
+            FROM
+                sample_annotation
+                JOIN sample ON (sample_annotation.sample_id = sample.id)
+                JOIN series_annotation ON (sample_annotation.serie_annotation_id = series_annotation.id)
+                JOIN platform ON (series_annotation.platform_id = platform.id)
+                JOIN tag ON (series_annotation.tag_id = tag.id)
+            WHERE
+                tag.tag_name ~* %(tags)s
+        ''', conn, params={'tags': '^(%s)$' % '|'.join(map(re.escape, tokens))})
     # Make tag columns
     df.tag_name = df.tag_name.str.lower()
     df.annotation = df.annotation.str.lower()
-    for tag in tags:
-        tag_name = tag.tag_name.lower()
+    for tag in tokens:
+        tag_name = tag.lower()
         df[tag_name] = df[df.tag_name == tag_name].annotation
 
     # Select only cells with filled annotations
@@ -253,7 +266,7 @@ def get_analysis_df(case_query, control_query, modifier_query=""):
     return df.dropna(subset=["sample_class"])
 
 if __name__ == "__main__":
-    get_analysis_df("""DF=='DF'""",
+    print get_analysis_df("""DF=='DF'""",
                     """DHF=='DHF'""",
                     "")
     1/0
