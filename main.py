@@ -51,6 +51,15 @@ def get_matrix_filename(series_id, platform_id):
     raise LookupError("Can't find matrix file for series %s, platform %s"
                       % (series_id, platform_id))
 
+def getImputed(data):
+    r.library("impute")
+    r_data = com.convert_to_r_matrix(data)
+    r_imputedData = r['impute.knn'](r_data)
+    npImputedData = np.asarray(r_imputedData[0])
+    imputedData = pd.DataFrame(npImputedData)
+    imputedData.index = data.index
+    imputedData.columns = data.columns
+    return imputedData
 
 def get_data(series_id, platform_id):
     matrixFilename = get_matrix_filename(series_id, platform_id)
@@ -72,7 +81,8 @@ def get_data(series_id, platform_id):
             if attempt:
                 raise
             matrixFilename = get_matrix_filename(series_id, platform_id)
-
+    data = cleanData(data)
+    data = getImputed(data)
     data.index = data.index.astype(str)
     data.index.name = "probe"
     for column in data.columns:
@@ -161,7 +171,11 @@ def getCombinedMatrix(names):
     gse_name, gpl_name = names[0]
     m = query_median_gene_data(gse_name, gpl_name)
     for (gse_name, gpl_name) in names[1:]:
-        m = m.join(query_median_gene_data(gse_name, gpl_name),
+        median_gene_data = query_median_gene_data(gse_name, gpl_name)
+        median_gene_data.to_csv("%s.%s.median.csv"%(gse_name, gpl_name))
+        if median_gene_data.empty:
+            continue
+        m = m.join(median_gene_data,
                    how="inner")
     return m
 
@@ -179,31 +193,35 @@ def getCombinedSamples(names):
     return combined_samples
 
 
-def getCombat(names):
+def getCombat(names, labels):
     # drop genes with missing data
+    labels = labels.set_index("gsm_name")
     m = getCombinedMatrix(names)
-    samples = getCombinedSamples(names)
-    samples = samples \
-        .set_index('gsm_name') \
+    m.to_csv("m.combined.csv")
+
+    samples_m = labels.index.intersection(m.columns)
+    m = m[samples_m]
+    samples = labels \
         .ix[m.columns] \
         .reset_index()
+    samples.to_csv("samples.csv")
+    m.to_csv("m.csv")
     edata = com.convert_to_r_matrix(m)
-    batch = robjects.StrVector(samples.gse_name + '_' + samples.gpl_name)
-    samples['sample_class'] = [0]*10 + [1]*11
+    batch = robjects.StrVector(samples.gse_name + '_' +  samples.gpl_name)
     pheno = robjects.FactorVector(samples.sample_class)
     r.library("sva")
     fmla = robjects.Formula('~pheno')
     # fmla.environment['pheno'] = r['as.factor'](pheno)
     fmla.environment['pheno'] = pheno
     mod = r['model.matrix'](fmla)
-    r_combat_edata = r.ComBat(dat=edata, batch=batch, mod=mod, par_prior=True, prior_plots=False)
+    r_combat_edata = r.ComBat(dat=edata, batch=batch, mod=mod)
     combat = pd.DataFrame(np.asmatrix(r_combat_edata))
     combat.index = m.index
     combat.columns = m.columns
     return combat
 
-
 def getImputed(data):
+    data.to_csv("data.csv")
     r.library("impute")
     r_data = com.convert_to_r_matrix(data)
     r_imputedData = r['impute.knn'](r_data)
@@ -213,7 +231,7 @@ def getImputed(data):
     imputedData.columns = data.columns
     return imputedData
 
-def get_analysis_df(case_query, control_query, modifier_query=""):
+def get_annotations(case_query, control_query, modifier_query=""):
     # Fetch all relevant data
     queries = [case_query, control_query, modifier_query]
     tokens = set(cat(re_all('[a-zA-Z]\w*', query) for query in queries))
@@ -223,6 +241,7 @@ def get_analysis_df(case_query, control_query, modifier_query=""):
                 sample.gsm_name,
                 annotation,
                 series_annotation.series_id,
+                series.gse_name,
                 series_annotation.platform_id,
                 platform.gpl_name,
                 tag.tag_name
@@ -232,6 +251,8 @@ def get_analysis_df(case_query, control_query, modifier_query=""):
                 JOIN series_annotation ON (sample_annotation.serie_annotation_id = series_annotation.id)
                 JOIN platform ON (series_annotation.platform_id = platform.id)
                 JOIN tag ON (series_annotation.tag_id = tag.id)
+                JOIN series ON (series_annotation.series_id = series.id)
+
             WHERE
                 tag.tag_name ~* %(tags)s
         ''', conn, params={'tags': '^(%s)$' % '|'.join(map(re.escape, tokens))})
@@ -265,17 +286,51 @@ def get_analysis_df(case_query, control_query, modifier_query=""):
 
     return df.dropna(subset=["sample_class"])
 
+def dropMissingSamples(data, naLimit=0.8):
+    """Filters a data frame to weed out cols with missing data"""
+    thresh = len(data.index) * (1 - naLimit)
+    return data.dropna(thresh=thresh, axis="columns")
+
+
+def dropMissingGenes(data, naLimit=0.5):
+    """Filters a data frame to weed out cols with missing data"""
+    thresh = len(data.columns) * (1 - naLimit)
+    return data.dropna(thresh=thresh, axis="rows")
+
+
+def translateNegativeCols(data):
+    """Translate the minimum value of each col to 1"""
+    data = data.replace([np.inf, -np.inf], np.nan) #replace infinities
+    return data + np.abs(np.min(data)) + 1
+    # for sample in data.columns:
+    # sampleMin = data[sample].min()
+    # if sampleMin < 1:
+    # absMin = abs(sampleMin)
+    # data[sample] = data[sample].add(absMin + 1)
+    # return data
+
+
+def cleanData(data):
+    """convenience function to trannslate the data before analysis"""
+    if not data.empty:
+        # data = getLogged(translateNegativeCols(data))
+        data = getLogged(dropMissingSamples(data))
+    return data
+
+
+def isLogged(data):
+    return True if (data.std() < 10).all() else False
+
+
+def getLogged(data):
+    # if (data.var() > 10).all():
+    if isLogged(data):
+        return data
+    return translateNegativeCols(np.log2(data))
+
 if __name__ == "__main__":
-    print get_analysis_df("""DF=='DF'""",
-                    """DHF=='DHF'""",
-                    "")
-    1/0
-    # print query_data("GSE1", "GPL7")
-    # print query_data("GSE3", "GPL9")
-    names = ("GSE1", "GPL7"),\
-            ("GSE1000", "GPL96"),
-            # ("GSE3", "GPL9"),\
-    # print getCombinedMatrix(names)
-    # print getCombinedSamples(names)
-    # print get_platform_probes(1)[['
-    print getCombat(names)
+    labels = get_annotations("""DF=='DF'""",
+                    """DHF=='DHF'""")
+    names = labels[['gse_name', 'gpl_name']].drop_duplicates().to_records(index=False)
+
+    combat = getCombat(names, labels)
