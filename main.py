@@ -81,13 +81,14 @@ def get_data(series_id, platform_id):
             if attempt:
                 raise
             matrixFilename = get_matrix_filename(series_id, platform_id)
+    data_file_name = "%s_%s.data.csv"
     data = cleanData(data)
-    data = getImputed(data)
+    data = get_imputed(data)
     data.index = data.index.astype(str)
     data.index.name = "probe"
     for column in data.columns:
         data[column] = data[column].astype(np.float64)
-    # return data.head(100)
+    # data.to_csv(data_file_name)
     return data
 
 
@@ -151,13 +152,14 @@ def dropMissingSamples(data, naLimit=0.8):
     return data.dropna(thresh=thresh, axis="columns")
 
 
-def dropMissingGenes(data, naLimit=0.5):
+def drop_missing_genes(data, naLimit=0.5):
     """Filters a data frame to weed out cols with missing data"""
     thresh = len(data.columns) * (1 - naLimit)
     return data.dropna(thresh=thresh, axis="rows")
 
 
 def query_median_gene_data(gse_name, gpl_name):
+    """returns the median intensity"""
     gene_data = query_gene_data(gse_name, gpl_name)
     gene_data_median = gene_data \
         .reset_index() \
@@ -165,8 +167,7 @@ def query_median_gene_data(gse_name, gpl_name):
         .median()
     return gene_data_median
 
-
-def getCombinedMatrix(names):
+def get_combined_matrix(names):
     """returns an averaged matrix of expression values over all supplid gses"""
     gse_name, gpl_name = names[0]
     m = query_median_gene_data(gse_name, gpl_name)
@@ -178,7 +179,6 @@ def getCombinedMatrix(names):
         m = m.join(median_gene_data,
                    how="inner")
     return m
-
 
 def getCombinedSamples(names):
     gse_name, gpl_name = names[0]
@@ -193,10 +193,10 @@ def getCombinedSamples(names):
     return combined_samples
 
 
-def getCombat(names, labels):
+def get_combat(names, labels):
     # drop genes with missing data
     labels = labels.set_index("gsm_name")
-    m = getCombinedMatrix(names)
+    m = get_combined_matrix(names)
     m.to_csv("m.combined.csv")
 
     samples_m = labels.index.intersection(m.columns)
@@ -220,7 +220,7 @@ def getCombat(names, labels):
     combat.columns = m.columns
     return combat
 
-def getImputed(data):
+def get_imputed(data):
     data.to_csv("data.csv")
     r.library("impute")
     r_data = com.convert_to_r_matrix(data)
@@ -329,8 +329,10 @@ def getLogged(data):
     return translateNegativeCols(np.log2(data))
 
 if __name__ == "__main__":
-    labels = get_annotations("""DF=='DF'""",
-                    """DHF=='DHF'""")
+    print "OK?"
+    labels = get_annotations("""DHF=='DHF' or DSS=='DSS'""",
+                    """DH=='DH'""",
+                             """Dengue_Acute=="Dengue_Acute" or Dengue_Early_Acute=='Dengue_Early_Acute' or Dengue_Late_Acute == 'Dengue_Late_Acute' or Dengue_DOF < 10""")
     names = labels[['gse_name', 'gpl_name']].drop_duplicates().to_records(index=False)
 
-    combat = getCombat(names, labels)
+    combat = get_combat(names, labels)
