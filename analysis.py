@@ -627,7 +627,6 @@ def normalize_quantiles(df):
     AA[I, np.arange(A.shape[1])] = np.mean(A[I, np.arange(A.shape[1])], axis=1)[:, np.newaxis]
     return pd.DataFrame(AA, index=df.index, columns=df.columns)
 
-
 import numexpr as ne
 
 def get_logged(df):
