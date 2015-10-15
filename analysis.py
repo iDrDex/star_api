@@ -647,7 +647,7 @@ if __name__ == "__main__":
         analysis_name = "test",
         case_query = """DHF=='DHF' or DSS=='DSS'""",
         control_query = """DF=='DF'""",
-        modifier_query = "",
+        modifier_query = """Dengue_Acute=="Dengue_Acute" or Dengue_Early_Acute=='Dengue_Early_Acute' or Dengue_Late_Acute == 'Dengue_Late_Acute' or Dengue_DOF <= 7""",
         min_samples = 3
     )
     analysis = perform_analysis(analysis=analysis)

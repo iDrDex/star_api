@@ -177,7 +177,7 @@ def get_combined_matrix(names):
         if median_gene_data.empty:
             continue
         m = m.join(median_gene_data,
-                   how="inner")
+                   how="outer")
     return m
 
 def getCombinedSamples(names):
@@ -196,7 +196,7 @@ def getCombinedSamples(names):
 def get_combat(names, labels):
     # drop genes with missing data
     labels = labels.set_index("gsm_name")
-    m = get_combined_matrix(names)
+    m = get_combined_matrix(names).dropna()
     m.to_csv("m.combined.csv")
 
     samples_m = labels.index.intersection(m.columns)
