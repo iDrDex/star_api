@@ -1,10 +1,11 @@
 __author__ = 'dex'
 from funcy import cat, first, re_all
 import conf, urllib2, os, shutil, gzip, psycopg2, psycopg2.extras, pandas as pd, numpy as np, re
-# get a connection, if a connect cannot be made an exception will be raised here
-conn = psycopg2.connect(conf.DB_PARAMATERS)
-cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
+###connect to DB###
+import db_conf #PRIVATE
+conn = psycopg2.connect(db_conf.DB_PARAMATERS)
+cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
 def __getMatrixNumHeaderLines(inStream):
     import re
@@ -51,16 +52,6 @@ def get_matrix_filename(series_id, platform_id):
     raise LookupError("Can't find matrix file for series %s, platform %s"
                       % (series_id, platform_id))
 
-def getImputed(data):
-    r.library("impute")
-    r_data = com.convert_to_r_matrix(data)
-    r_imputedData = r['impute.knn'](r_data)
-    npImputedData = np.asarray(r_imputedData[0])
-    imputedData = pd.DataFrame(npImputedData)
-    imputedData.index = data.index
-    imputedData.columns = data.columns
-    return imputedData
-
 def get_data(series_id, platform_id):
     matrixFilename = get_matrix_filename(series_id, platform_id)
     # setup data for specific platform
@@ -75,17 +66,20 @@ def get_data(series_id, platform_id):
                                             skipfooter=1,
                                             engine='python')
         except IOError as e:
-            # In case we have cirrupt file
+            # In case we have corrupt file
             print "Failed loading %s: %s" % (matrixFilename, e)
             os.remove(matrixFilename)
             if attempt:
                 raise
             matrixFilename = get_matrix_filename(series_id, platform_id)
     data_file_name = "%s_%s.data.csv"
-    data = cleanData(data)
-    data = get_imputed(data)
+    data = clean_data(data)
+    data = data.dropna() \
+        if len(data.columns) == 1 \
+        else impute_data(data)
     data.index = data.index.astype(str)
     data.index.name = "probe"
+    data.columns.name = 'gsm_name'
     for column in data.columns:
         data[column] = data[column].astype(np.float64)
     # data.to_csv(data_file_name)
@@ -114,11 +108,12 @@ def query_samples(gse_name, gpl_name):
 
 
 def get_gene_data(series_id, platform_id):
-    sample_data = get_data(series_id, platform_id)
+    data = get_data(series_id, platform_id)
     platform_probes = get_platform_probes(platform_id)
     gene_data = platform_probes[['mygene_sym', 'mygene_entrez']] \
-        .join(sample_data) \
+        .join(data) \
         .set_index(['mygene_sym', 'mygene_entrez'])
+    gene_data.columns.name = 'gsm_name'
     return gene_data
 
 
@@ -131,131 +126,64 @@ def query_record(id, table, id_field="id"):
 def query_gene_data(gse_name, gpl_name):
     series_id = query_record(gse_name, "series", "gse_name")['id']
     platform_id = query_record(gpl_name, "platform", "gpl_name")['id']
-    return get_gene_data(series_id, platform_id)
+    gene_data = get_gene_data(series_id, platform_id)
+    gene_data.columns = gene_data.columns + "_" + gpl_name + "_" + gse_name
+    return gene_data
+
+# def query_data(gse_name, gpl_name):
+#     series_id = query_record(gse_name, "series", "gse_name")['id']
+#     platform_id = query_record(gpl_name, "platform", "gpl_name")['id']
+#     data = get_data(series_id, platform_id)
+#     return data
 
 
-def query_data(gse_name, gpl_name):
-    series_id = query_record(gse_name, "series", "gse_name")['id']
-    platform_id = query_record(gpl_name, "platform", "gpl_name")['id']
-    return get_data(series_id, platform_id)
+def query_tags_annotations(tokens):
+    df = pd.read_sql_query('''
+        SELECT
+            sample_id,
+            sample.gsm_name,
+            annotation,
+            series_annotation.series_id,
+            series.gse_name,
+            series_annotation.platform_id,
+            platform.gpl_name,
+            tag.tag_name
+        FROM
+            sample_annotation
+            JOIN sample ON (sample_annotation.sample_id = sample.id)
+            JOIN series_annotation ON (sample_annotation.serie_annotation_id = series_annotation.id)
+            JOIN platform ON (series_annotation.platform_id = platform.id)
+            JOIN tag ON (series_annotation.tag_id = tag.id)
+            JOIN series ON (series_annotation.series_id = series.id)
 
+        WHERE
+            tag.tag_name ~* %(tags)s
+    ''', conn, params={'tags': '^(%s)$' % '|'.join(map(re.escape, tokens))})
+    wide = get_wide_annotations(df, tokens)
+    return wide
 
-import rpy2.robjects as robjects
+def get_wide_annotations(df, tokens):
+    # Make tag columns
+    df.tag_name = df.tag_name.str.lower()
+    df.annotation = df.annotation.str.lower()
+    for tag in tokens:
+        tag_name = tag.lower()
+        df[tag_name] = df[df.tag_name == tag_name].annotation
 
-r = robjects.r
-import pandas.rpy.common as com
+    # Select only cells with filled annotations
+    # df = df.drop(['tag_name', 'annotation'], axis=1).groupby(['sample_id', 'series_id', 'platform_id', 'gsm_name', 'gpl_name'],
+    #                 as_index=False).first()
 
-
-def dropMissingSamples(data, naLimit=0.8):
-    """Filters a data frame to weed out cols with missing data"""
-    thresh = len(data.index) * (1 - naLimit)
-    return data.dropna(thresh=thresh, axis="columns")
-
-
-def drop_missing_genes(data, naLimit=0.5):
-    """Filters a data frame to weed out cols with missing data"""
-    thresh = len(data.columns) * (1 - naLimit)
-    return data.dropna(thresh=thresh, axis="rows")
-
-
-def query_median_gene_data(gse_name, gpl_name):
-    """returns the median intensity"""
-    gene_data = query_gene_data(gse_name, gpl_name)
-    gene_data_median = gene_data \
-        .reset_index() \
-        .groupby(['mygene_sym', 'mygene_entrez']) \
-        .median()
-    return gene_data_median
-
-def get_combined_matrix(names):
-    """returns an averaged matrix of expression values over all supplid gses"""
-    gse_name, gpl_name = names[0]
-    m = query_median_gene_data(gse_name, gpl_name)
-    for (gse_name, gpl_name) in names[1:]:
-        median_gene_data = query_median_gene_data(gse_name, gpl_name)
-        median_gene_data.to_csv("%s.%s.median.csv"%(gse_name, gpl_name))
-        if median_gene_data.empty:
-            continue
-        m = m.join(median_gene_data,
-                   how="outer")
-    return m
-
-def getCombinedSamples(names):
-    gse_name, gpl_name = names[0]
-    combined_samples = query_samples(gse_name, gpl_name)
-    combined_samples['gse_name'] = gse_name
-    combined_samples['gpl_name'] = gpl_name
-    for (gse_name, gpl_name) in names[1:]:
-        print gse_name, gpl_name,
-        samples = query_samples(gse_name, gpl_name)
-        samples['gpl_name'] = gpl_name
-        combined_samples = pd.concat([combined_samples, samples])
-    return combined_samples
-
-
-def get_combat(names, labels):
-    # drop genes with missing data
-    labels = labels.set_index("gsm_name")
-    m = get_combined_matrix(names).dropna()
-    m.to_csv("m.combined.csv")
-
-    samples_m = labels.index.intersection(m.columns)
-    m = m[samples_m]
-    samples = labels \
-        .ix[m.columns] \
-        .reset_index()
-    samples.to_csv("samples.csv")
-    m.to_csv("m.csv")
-    edata = com.convert_to_r_matrix(m)
-    batch = robjects.StrVector(samples.gse_name + '_' +  samples.gpl_name)
-    pheno = robjects.FactorVector(samples.sample_class)
-    r.library("sva")
-    fmla = robjects.Formula('~pheno')
-    # fmla.environment['pheno'] = r['as.factor'](pheno)
-    fmla.environment['pheno'] = pheno
-    mod = r['model.matrix'](fmla)
-    r_combat_edata = r.ComBat(dat=edata, batch=batch, mod=mod)
-    combat = pd.DataFrame(np.asmatrix(r_combat_edata))
-    combat.index = m.index
-    combat.columns = m.columns
-    return combat
-
-def get_imputed(data):
-    data.to_csv("data.csv")
-    r.library("impute")
-    r_data = com.convert_to_r_matrix(data)
-    r_imputedData = r['impute.knn'](r_data)
-    npImputedData = np.asarray(r_imputedData[0])
-    imputedData = pd.DataFrame(npImputedData)
-    imputedData.index = data.index
-    imputedData.columns = data.columns
-    return imputedData
+    df = df.groupby(['sample_id', 'series_id', 'platform_id', 'gsm_name', 'gpl_name'],
+                    as_index=False).first()
+    return df
 
 def get_annotations(case_query, control_query, modifier_query=""):
     # Fetch all relevant data
     queries = [case_query, control_query, modifier_query]
     tokens = set(cat(re_all('[a-zA-Z]\w*', query) for query in queries))
-    df = pd.read_sql_query('''
-            SELECT
-                sample_id,
-                sample.gsm_name,
-                annotation,
-                series_annotation.series_id,
-                series.gse_name,
-                series_annotation.platform_id,
-                platform.gpl_name,
-                tag.tag_name
-            FROM
-                sample_annotation
-                JOIN sample ON (sample_annotation.sample_id = sample.id)
-                JOIN series_annotation ON (sample_annotation.serie_annotation_id = series_annotation.id)
-                JOIN platform ON (series_annotation.platform_id = platform.id)
-                JOIN tag ON (series_annotation.tag_id = tag.id)
-                JOIN series ON (series_annotation.series_id = series.id)
+    df = query_tags_annotations(tokens)
 
-            WHERE
-                tag.tag_name ~* %(tags)s
-        ''', conn, params={'tags': '^(%s)$' % '|'.join(map(re.escape, tokens))})
     # Make tag columns
     df.tag_name = df.tag_name.str.lower()
     df.annotation = df.annotation.str.lower()
@@ -286,19 +214,56 @@ def get_annotations(case_query, control_query, modifier_query=""):
 
     return df.dropna(subset=["sample_class"])
 
-def dropMissingSamples(data, naLimit=0.8):
-    """Filters a data frame to weed out cols with missing data"""
-    thresh = len(data.index) * (1 - naLimit)
-    return data.dropna(thresh=thresh, axis="columns")
+import numexpr as ne
 
+def log_data(df):
+    if is_logged(df):
+        return df
 
-def dropMissingGenes(data, naLimit=0.5):
+    data = df.values
+    floor = np.abs(np.min(data, axis=0))
+    res = ne.evaluate('log(data + floor + 1) / log(2)')
+    return pd.DataFrame(res, index=df.index, columns=df.columns)
+
+def is_logged(df):
+    return np.max(df.values) < 10
+
+# def is_logged(data):
+#     return True if (data.std() < 10).all() else False
+#
+#
+# def log_data(data):
+#     # if (data.var() > 10).all():
+#     if is_logged(data):
+#         return data
+#     return translate_negative_cols(np.log2(data))
+import rpy2.robjects as robjects
+
+r = robjects.r
+import pandas.rpy.common as com
+
+def impute_data(data):
+    # data.to_csv("data.csv")
+    r.library("impute")
+    r_data = com.convert_to_r_matrix(data)
+    r_imputedData = r['impute.knn'](r_data)
+    npImputedData = np.asarray(r_imputedData[0])
+    imputedData = pd.DataFrame(npImputedData)
+    imputedData.index = data.index
+    imputedData.columns = data.columns
+    return imputedData
+
+def drop_missing_genes(data, naLimit=0.5):
     """Filters a data frame to weed out cols with missing data"""
     thresh = len(data.columns) * (1 - naLimit)
     return data.dropna(thresh=thresh, axis="rows")
 
+def drop_missing_samples(data, naLimit=0.8):
+    """Filters a data frame to weed out cols with missing data"""
+    thresh = len(data.index) * (1 - naLimit)
+    return data.dropna(thresh=thresh, axis="columns")
 
-def translateNegativeCols(data):
+def translate_negative_cols(data):
     """Translate the minimum value of each col to 1"""
     data = data.replace([np.inf, -np.inf], np.nan) #replace infinities
     return data + np.abs(np.min(data)) + 1
@@ -309,30 +274,13 @@ def translateNegativeCols(data):
     # data[sample] = data[sample].add(absMin + 1)
     # return data
 
-
-def cleanData(data):
+def clean_data(data):
     """convenience function to trannslate the data before analysis"""
     if not data.empty:
-        # data = getLogged(translateNegativeCols(data))
-        data = getLogged(dropMissingSamples(data))
+        # data = log_data(translate_negative_cols(data))
+        data = log_data(drop_missing_samples(data))
     return data
 
-
-def isLogged(data):
-    return True if (data.std() < 10).all() else False
-
-
-def getLogged(data):
-    # if (data.var() > 10).all():
-    if isLogged(data):
-        return data
-    return translateNegativeCols(np.log2(data))
-
 if __name__ == "__main__":
-    print "OK?"
-    labels = get_annotations("""DHF=='DHF' or DSS=='DSS'""",
-                    """DH=='DH'""",
-                             """Dengue_Acute=="Dengue_Acute" or Dengue_Early_Acute=='Dengue_Early_Acute' or Dengue_Late_Acute == 'Dengue_Late_Acute' or Dengue_DOF < 10""")
-    names = labels[['gse_name', 'gpl_name']].drop_duplicates().to_records(index=False)
+    gene_data = query_gene_data("GSE4058","GPL2778")
 
-    combat = get_combat(names, labels)

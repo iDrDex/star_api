@@ -1,20 +1,16 @@
-import os
-import re
-import gzip
-import urllib2
-import shutil
 import logging
 
+from main import *
 from easydict import EasyDict
 from funcy import first, log_durations, imap, memoize, cat, re_all
 import numpy as np
 import pandas as pd
 import scipy.stats as stats
 
-###connect to DB###
-import conf, psycopg2, psycopg2.extras
-conn = psycopg2.connect(conf.DB_PARAMATERS)
-cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+# ###connect to DB###
+# import conf, psycopg2, psycopg2.extras
+# conn = psycopg2.connect(conf.DB_PARAMATERS)
+# cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
 #### create logger
 logger = logging.getLogger(__name__)
@@ -287,7 +283,8 @@ def get_data(series_id, platform_id):
     data.index.name = "probe"
     for column in data.columns:
         data[column] = data[column].astype(np.float64)
-    # return data.head(100)
+
+
     return data
 
 
@@ -579,7 +576,7 @@ class MetaAnalyser:
 def getFoldChangeAnalysis(data, sample_class, debug=False):
     from scipy.stats import ttest_ind
 
-    data = normalize_quantiles(get_logged(data))
+    data = normalize_quantiles(log_data(data))
 
     summary = pd.DataFrame(index=data.index)
 
@@ -627,21 +624,116 @@ def normalize_quantiles(df):
     AA[I, np.arange(A.shape[1])] = np.mean(A[I, np.arange(A.shape[1])], axis=1)[:, np.newaxis]
     return pd.DataFrame(AA, index=df.index, columns=df.columns)
 
-import numexpr as ne
+def query_median_gene_data(gse_name, gpl_name):
+    import glob
+    """returns the median intensity"""
+    filename = os.path.join(conf.CSV_CACHE, "%s.%s.median.csv"%(gse_name, gpl_name))
+    if glob.glob(filename):
+        median_gene_data = pd.read_csv(filename)\
+            .set_index(['mygene_sym', 'mygene_entrez'])
+    else:
+        gene_data = query_gene_data(gse_name, gpl_name)
+        median_gene_data = gene_data \
+            .reset_index() \
+            .groupby(['mygene_sym', 'mygene_entrez']) \
+            .median()
+        median_gene_data.to_csv(filename)
+    return median_gene_data
 
-def get_logged(df):
-    if is_logged(df):
-        return df
+    # gene_index = gene_data_median.index
+    # samples = gene_data_median.reset_index().T
+    # samples['gpl_name'] = gpl_name
+    # samples['gse_name'] = gse_name
+    # gene_data = samples.reset_index().set_index(['gsm_name', 'gpl_name', 'gse_name']).T
+    # gene_data.index = gene_index
+    # return gene_data
 
-    data = df.values
-    floor = np.abs(np.min(data, axis=0))
-    res = ne.evaluate('log(data + floor + 1) / log(2)')
-    return pd.DataFrame(res, index=df.index, columns=df.columns)
 
-def is_logged(df):
-    return np.max(df.values) < 10
+def combine_matrix(names):
+    """returns an combined matrix of genes vs samples expression values over all supplied gses"""
+    i = 0
+    gse_name, gpl_name = names[0]
+    m = query_median_gene_data(gse_name, gpl_name)
+    for (gse_name, gpl_name) in names[1:]:
+        i += 1
+        print "%s/%s"%(i, len(names)), gse_name, gpl_name
+        median_gene_data = query_median_gene_data(gse_name, gpl_name)
+        if median_gene_data.empty:
+            continue
+        m = m.join(median_gene_data,
+                   how="outer")
+    return m
+
+def combine_samples(names):
+    gse_name, gpl_name = names[0]
+    combined_samples = query_samples(gse_name, gpl_name)
+    combined_samples['gse_name'] = gse_name
+    combined_samples['gpl_name'] = gpl_name
+    for (gse_name, gpl_name) in names[1:]:
+        print gse_name, gpl_name,
+        samples = query_samples(gse_name, gpl_name)
+        samples['gpl_name'] = gpl_name
+        combined_samples = pd.concat([combined_samples, samples])
+    return combined_samples
+
+
+def combat(df):
+    names = df[['gse_name', 'gpl_name']].drop_duplicates().to_records(index=False)
+    # drop genes with missing data
+    df['code'] = df.gsm_name + "_" + df.gpl_name + "_" + df.gse_name
+    df = df.set_index('code')
+
+    combined_matrix = combine_matrix(names)
+    # combined_matrix.to_csv("combined_matrix.csv")
+    m = drop_missing_samples(combined_matrix).dropna()
+    # drop_missing_genes = drop_missing_genes(dropMissingSamples(combined_matrix)).dropna() #UNNECESSARY
+    # m.to_csv("m.csv")
+    samples_m = df.index.intersection(m.columns)
+    m = m[samples_m]
+    samples = df \
+        .ix[m.columns] \
+        .reset_index()
+    # samples.to_csv("samples.csv")
+    edata = com.convert_to_r_matrix(m)
+    batch = robjects.StrVector(samples.gse_name + '_' +  samples.gpl_name)
+    # pheno = robjects.FactorVector(samples.sample_class)
+    pheno = robjects.FactorVector(samples.annotation)
+    r.library("sva")
+    fmla = robjects.Formula('~pheno')
+    # fmla.environment['pheno'] = r['as.factor'](pheno)
+    fmla.environment['pheno'] = pheno
+    mod = r['model.matrix'](fmla)
+    r_combat_edata = r.ComBat(dat=edata, batch=batch, mod=mod)
+    combat_matrix = pd.DataFrame(np.asmatrix(r_combat_edata))
+    combat_matrix.index = m.index
+    combat_matrix.columns = m.columns
+    return combat_matrix, samples
+
+# def is_logged(data):
+#     return True if (data.std() < 10).all() else False
+#
+#
+# def log_data(data):
+#     # if (data.var() > 10).all():
+#     if is_logged(data):
+#         return data
+#     return translate_negative_cols(np.log2(data))
+
+
 
 if __name__ == "__main__":
+
+    tokens = "MB_Group4","MB_Cerebellum_Control", "GBM_samples", "GBM_controls"
+    labels = query_tags_annotations(tokens)
+    # labels = get_annotations("""DHF=='DHF' or DSS=='DSS'""",
+    #                 """DH=='DH'""",
+    #                          """Dengue_Acute=="Dengue_Acute" or Dengue_Early_Acute=='Dengue_Early_Acute' or Dengue_Late_Acute == 'Dengue_Late_Acute' or Dengue_DOF < 10""")
+
+    combat_matrix, samples  = combat(labels)
+    # combat_matrix.to_csv("combat_brain.csv")
+    # samples.to_csv("combat_brain_samples.csv")
+    1/0
+
     analysis = EasyDict(
         analysis_name = "test",
         case_query = """DHF=='DHF' or DSS=='DSS'""",
