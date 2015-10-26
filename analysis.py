@@ -723,23 +723,30 @@ def combat(df):
 
 if __name__ == "__main__":
 
-    tokens = "MB_Group4","MB_Cerebellum_Control", "GBM_samples", "GBM_controls"
-    labels = query_tags_annotations(tokens)
-    # labels = get_annotations("""DHF=='DHF' or DSS=='DSS'""",
-    #                 """DH=='DH'""",
-    #                          """Dengue_Acute=="Dengue_Acute" or Dengue_Early_Acute=='Dengue_Early_Acute' or Dengue_Late_Acute == 'Dengue_Late_Acute' or Dengue_DOF < 10""")
-
-    combat_matrix, samples  = combat(labels)
-    # combat_matrix.to_csv("combat_brain.csv")
-    # samples.to_csv("combat_brain_samples.csv")
-    1/0
+    # tokens = "MB_Group4","MB_Cerebellum_Control", "GBM_samples", "GBM_controls"
+    # labels = query_tags_annotations(tokens)
+    # # labels = get_annotations("""DHF=='DHF' or DSS=='DSS'""",
+    # #                 """DH=='DH'""",
+    # #                          """Dengue_Acute=="Dengue_Acute" or Dengue_Early_Acute=='Dengue_Early_Acute' or Dengue_Late_Acute == 'Dengue_Late_Acute' or Dengue_DOF < 10""")
+    #
+    # combat_matrix, samples  = combat(labels)
+    # # combat_matrix.to_csv("combat_brain.csv")
+    # # samples.to_csv("combat_brain_samples.csv")
+    # 1/0
 
     analysis = EasyDict(
         analysis_name = "test",
-        case_query = """DHF=='DHF' or DSS=='DSS'""",
-        control_query = """DF=='DF'""",
-        modifier_query = """Dengue_Acute=="Dengue_Acute" or Dengue_Early_Acute=='Dengue_Early_Acute' or Dengue_Late_Acute == 'Dengue_Late_Acute' or Dengue_DOF <= 7""",
+        case_query = """ MS == 'MS'""",
+        control_query = """MS_control == 'MS_control'""",
+        modifier_query = "",
         min_samples = 3
     )
+    # analysis = EasyDict(
+    #     analysis_name = "test",
+    #     case_query = """DHF=='DHF' or DSS=='DSS'""",
+    #     control_query = """DF=='DF'""",
+    #     modifier_query = """Dengue_Acute=="Dengue_Acute" or Dengue_Early_Acute=='Dengue_Early_Acute' or Dengue_Late_Acute == 'Dengue_Late_Acute' or Dengue_DOF <= 7""",
+    #     min_samples = 3
+    # )
     analysis = perform_analysis(analysis=analysis)
     analysis.to_csv("analysis.csv")
