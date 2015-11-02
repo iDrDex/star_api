@@ -188,6 +188,7 @@ def load_gse(df, series_id):
     for platform_id in df.query("""series_id == %s""" % series_id).platform_id.unique():
         gpl_name = platform_gpl_name(platform_id)
         gpl2data[gpl_name] = get_data(series_id, platform_id)
+        gpl2data[gpl_name].to_csv("%s.%s.csv"%(gse_name, gpl_name))
         gpl2probes[gpl_name] = get_probes(platform_id)
     samples = df.query('series_id == %s' % series_id)
     return Gse(gse_name, samples, gpl2data, gpl2probes)
@@ -254,38 +255,41 @@ def get_matrix_filename(series_id, platform_id):
                       % (series_id, platform_id))
 
 
-@log_durations(logger.debug)
-def get_data(series_id, platform_id):
-    matrixFilename = get_matrix_filename(series_id, platform_id)
-    # setup data for specific platform
-    for attempt in (0, 1):
-        try:
-            headerRows = __getMatrixNumHeaderLines(gzip.open(matrixFilename))
-            na_values = ["null", "NA", "NaN", "N/A", "na", "n/a"]
-            data = pd.io.parsers.read_table(gzip.open(matrixFilename),
-                                            skiprows=headerRows,
-                                            index_col=["ID_REF"],
-                                            na_values=na_values,
-                                            lineterminator='\n',
-                                            engine='c')
-            # Drop last line
-            data = data.drop(data.index[-1]).dropna()
-            break
-        except IOError as e:
-            # In case we have cirrupt file
-            logger.error("Failed loading %s: %s" % (matrixFilename, e))
-            os.remove(matrixFilename)
-            if attempt:
-                raise
-            matrixFilename = get_matrix_filename(series_id, platform_id)
-
-    data.index = data.index.astype(str)
-    data.index.name = "probe"
-    for column in data.columns:
-        data[column] = data[column].astype(np.float64)
-
-
-    return data
+# @log_durations(logger.debug)
+# def get_data(series_id, platform_id):
+#     matrixFilename = get_matrix_filename(series_id, platform_id)
+#     # setup data for specific platform
+#     for attempt in (0, 1):
+#         try:
+#             headerRows = __getMatrixNumHeaderLines(gzip.open(matrixFilename))
+#             na_values = ["null", "NA", "NaN", "N/A", "na", "n/a"]
+#             data = pd.io.parsers.read_table(gzip.open(matrixFilename),
+#                                             skiprows=headerRows,
+#                                             index_col=["ID_REF"],
+#                                             na_values=na_values,
+#                                             lineterminator='\n',
+#                                             engine='c')
+#             # Drop last line
+#             data.to_csv("data.1.csv")
+#             data = data.drop(data.index[-1]).dropna()
+#             break
+#         except IOError as e:
+#             # In case we have cirrupt file
+#             logger.error("Failed loading %s: %s" % (matrixFilename, e))
+#             os.remove(matrixFilename)
+#             if attempt:
+#                 raise
+#             matrixFilename = get_matrix_filename(series_id, platform_id)
+#
+#     data.index = data.index.astype(str)
+#     data.index.name = "probe"
+#     data.to_csv("data.2.csv")
+#
+#     for column in data.columns:
+#         data[column] = data[column].astype(np.float64)
+#
+#
+#     return data
 
 
 @log_durations(logger.debug)
@@ -687,13 +691,13 @@ def combat(df):
     # combined_matrix.to_csv("combined_matrix.csv")
     m = drop_missing_samples(combined_matrix).dropna()
     # drop_missing_genes = drop_missing_genes(dropMissingSamples(combined_matrix)).dropna() #UNNECESSARY
-    # m.to_csv("m.csv")
     samples_m = df.index.intersection(m.columns)
     m = m[samples_m]
+    m.to_csv("m.csv")
     samples = df \
         .ix[m.columns] \
         .reset_index()
-    # samples.to_csv("samples.csv")
+    samples.to_csv("samples.csv")
     edata = com.convert_to_r_matrix(m)
     batch = robjects.StrVector(samples.gse_name + '_' +  samples.gpl_name)
     # pheno = robjects.FactorVector(samples.sample_class)
@@ -722,6 +726,11 @@ def combat(df):
 
 
 if __name__ == "__main__":
+    # tokens = "MB_Group4","MB_Group3", "MB_SHH", "MB_WNT", "MB_unlabeled"
+    # labels = query_tags_annotations(tokens)
+    # labels = get_unique_annotations(labels)
+    # combat_matrix, samples  = combat(labels.tail(300))
+    # 1/0
 
     # tokens = "MB_Group4","MB_Cerebellum_Control", "GBM_samples", "GBM_controls"
     # labels = query_tags_annotations(tokens)
@@ -741,6 +750,17 @@ if __name__ == "__main__":
         modifier_query = "",
         min_samples = 3
     )
+
+
+    analysis = EasyDict(
+        analysis_name = "test",
+        case_query = """Smoker == 'Smoker'""",# MS == 'MS'""",
+        control_query = """Nonsmoker == 'Nonsmoker'""",#"""MS_control == 'MS_control'""",
+        modifier_query = "",
+        min_samples = 3
+    )
+
+
     # analysis = EasyDict(
     #     analysis_name = "test",
     #     case_query = """DHF=='DHF' or DSS=='DSS'""",

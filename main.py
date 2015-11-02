@@ -52,7 +52,7 @@ def get_matrix_filename(series_id, platform_id):
     raise LookupError("Can't find matrix file for series %s, platform %s"
                       % (series_id, platform_id))
 
-def get_data(series_id, platform_id):
+def get_data(series_id, platform_id, impute = True):
     matrixFilename = get_matrix_filename(series_id, platform_id)
     # setup data for specific platform
     for attempt in (0, 1):
@@ -73,15 +73,18 @@ def get_data(series_id, platform_id):
                 raise
             matrixFilename = get_matrix_filename(series_id, platform_id)
     data_file_name = "%s_%s.data.csv"
-    data = clean_data(data)
-    data = data.dropna() \
-        if len(data.columns) == 1 \
-        else impute_data(data)
+    data = clean_data(data) #drop samples
+    if len(data.columns) == 1:
+        data = data.dropna()
+    elif impute:
+        data = impute_data(data)
+    data = log_data(data) #logc
     data.index = data.index.astype(str)
     data.index.name = "probe"
     data.columns.name = 'gsm_name'
     for column in data.columns:
         data[column] = data[column].astype(np.float64)
+
     # data.to_csv(data_file_name)
     return data
 
@@ -159,23 +162,30 @@ def query_tags_annotations(tokens):
         WHERE
             tag.tag_name ~* %(tags)s
     ''', conn, params={'tags': '^(%s)$' % '|'.join(map(re.escape, tokens))})
-    wide = get_wide_annotations(df, tokens)
-    return wide
+    # wide = get_wide_annotations(df, tokens)
+    return df
 
-def get_wide_annotations(df, tokens):
+def get_unique_annotations(df):
+    df= df.query(""" annotation != ''""")\
+            .groupby(['sample_id', 'series_id', 'platform_id', 'gsm_name', 'gpl_name'],
+                            as_index=False)\
+            .filter(lambda x: len(x) == 1)
+    return get_wide_annotations(df)
+
+def get_wide_annotations(df):
+    tokens = df.tag_name.unique()
+    # df = df.groupby(['sample_id', 'series_id', 'platform_id', 'gsm_name', 'gpl_name'],
+    #                 as_index=False).filter(lambda x: len(x) == 1) #extracts unique
     # Make tag columns
     df.tag_name = df.tag_name.str.lower()
     df.annotation = df.annotation.str.lower()
+    # create outcome column
+    # df['outcome'] = None
+
     for tag in tokens:
         tag_name = tag.lower()
         df[tag_name] = df[df.tag_name == tag_name].annotation
 
-    # Select only cells with filled annotations
-    # df = df.drop(['tag_name', 'annotation'], axis=1).groupby(['sample_id', 'series_id', 'platform_id', 'gsm_name', 'gpl_name'],
-    #                 as_index=False).first()
-
-    df = df.groupby(['sample_id', 'series_id', 'platform_id', 'gsm_name', 'gpl_name'],
-                    as_index=False).first()
     return df
 
 def get_annotations(case_query, control_query, modifier_query=""):
@@ -278,9 +288,10 @@ def clean_data(data):
     """convenience function to trannslate the data before analysis"""
     if not data.empty:
         # data = log_data(translate_negative_cols(data))
-        data = log_data(drop_missing_samples(data))
+        data = drop_missing_samples(data)
     return data
 
 if __name__ == "__main__":
-    gene_data = query_gene_data("GSE4058","GPL2778")
+    data = query_gene_data("GSE30530", "GPL6480")
+    # gene_data = query_gene_data("GSE4058","GPL2778")
 
