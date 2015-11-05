@@ -52,13 +52,13 @@ def get_matrix_filename(series_id, platform_id):
     raise LookupError("Can't find matrix file for series %s, platform %s"
                       % (series_id, platform_id))
 
-def get_data(series_id, platform_id, impute = True):
+def get_data(series_id, platform_id, impute = False):
     matrixFilename = get_matrix_filename(series_id, platform_id)
     # setup data for specific platform
     for attempt in (0, 1):
         try:
             headerRows = __getMatrixNumHeaderLines(gzip.open(matrixFilename))
-            na_values = ["null", "NA", "NaN", "N/A", "na", "n/a"]
+            na_values = ["null", "NA", "NaN", "N/A", "na", "n/a", ""]
             data = pd.io.parsers.read_table(gzip.open(matrixFilename),
                                             skiprows=headerRows,
                                             index_col=["ID_REF"],
@@ -72,20 +72,23 @@ def get_data(series_id, platform_id, impute = True):
             if attempt:
                 raise
             matrixFilename = get_matrix_filename(series_id, platform_id)
-    data_file_name = "%s_%s.data.csv"
+    data.to_csv("data.csv")
     data = clean_data(data) #drop samples
+    data.to_csv("clean.data.csv")
     if len(data.columns) == 1:
         data = data.dropna()
     elif impute:
         data = impute_data(data)
     data = log_data(data) #logc
+    data.to_csv("log.data.csv")
+
     data.index = data.index.astype(str)
     data.index.name = "probe"
     data.columns.name = 'gsm_name'
     for column in data.columns:
         data[column] = data[column].astype(np.float64)
 
-    # data.to_csv(data_file_name)
+    data.to_csv("float64.data.csv")
     return data
 
 
@@ -132,6 +135,13 @@ def query_gene_data(gse_name, gpl_name):
     gene_data = get_gene_data(series_id, platform_id)
     gene_data.columns = gene_data.columns + "_" + gpl_name + "_" + gse_name
     return gene_data
+
+def query_data(gse_name, gpl_name, impute=False):
+    series_id = query_record(gse_name, "series", "gse_name")['id']
+    platform_id = query_record(gpl_name, "platform", "gpl_name")['id']
+    data = get_data(series_id, platform_id, impute)
+    # data.columns = data.columns + "_" + gpl_name + "_" + gse_name
+    return data
 
 # def query_data(gse_name, gpl_name):
 #     series_id = query_record(gse_name, "series", "gse_name")['id']
@@ -231,7 +241,7 @@ def log_data(df):
         return df
 
     data = df.values
-    floor = np.abs(np.min(data, axis=0))
+    floor = np.abs(np.nanmin(data, axis=0))
     res = ne.evaluate('log(data + floor + 1) / log(2)')
     return pd.DataFrame(res, index=df.index, columns=df.columns)
 
@@ -292,6 +302,6 @@ def clean_data(data):
     return data
 
 if __name__ == "__main__":
-    data = query_gene_data("GSE30530", "GPL6480")
+    data = query_data("GSE19617", "GPL6480", impute = True)
     # gene_data = query_gene_data("GSE4058","GPL2778")
 

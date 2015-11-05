@@ -25,7 +25,7 @@ logger.addHandler(fh)
 logger.addHandler(ch)
 
 @log_durations(logger.debug)
-def perform_analysis(analysis, debug=False):
+def perform_analysis(analysis, debug=False, impute = False):
     logger.info('Started %s analysis', analysis.analysis_name)
     with log_durations(logger.debug, 'Loading dataframe for %s' % analysis.analysis_name):
         df = get_analysis_df(analysis.case_query, analysis.control_query, analysis.modifier_query)
@@ -64,15 +64,15 @@ def perform_analysis(analysis, debug=False):
 
     # Load GSE data, make and concat all fold change analyses results.
     # NOTE: we are doing load_gse() lazily here to avoid loading all matrices at once.
-    logger.info('Loading data and calculating fold changes for %s', analysis.analysis_name)
+    logger.info('Loading data and calculating fold change for %s', analysis.analysis_name)
     with log_durations(logger.debug, 'Load/fold for %s' % analysis.analysis_name):
-        gses = (load_gse(df, series_id) for series_id in sorted(df.series_id.unique()))
-        fold_changes = pd.concat(imap(get_fold_change_analysis, gses))
-        debug and fold_changes.to_csv("%s.fc.csv" % debug)
+        gses = (load_gse(df, series_id, impute) for series_id in sorted(df.series_id.unique()))
+        fold_change = pd.concat(imap(get_full_fold_change, gses))
+        debug and fold_change.to_csv("%s.fc.csv" % debug)
 
     logger.info('Meta-Analyzing %s', analysis.analysis_name)
     with log_durations(logger.debug, 'Meta analysis for %s' % analysis.analysis_name):
-        balanced = getFullMetaAnalysis(fold_changes, debug=debug).reset_index()
+        balanced = get_full_meta(fold_change, debug=debug).reset_index()
         debug and balanced.to_csv("%s.meta.csv" % debug)
 
     # logger.info('Inserting %s analysis results', analysis.analysis_name)
@@ -87,7 +87,7 @@ def perform_analysis(analysis, debug=False):
         # MetaAnalysis.objects.bulk_create(MetaAnalysis(**row) for row in rows)
 
     logger.info('DONE %s analysis', analysis.analysis_name)
-    return balanced
+    return fold_change, balanced
 
 def filter_sources(df, query, reason):
     start_sources = df.groupby(['series_id', 'platform_id']).ngroups
@@ -107,7 +107,7 @@ def filter_sources(df, query, reason):
 # @dcache.checked
 # @dcache_new.cached
 @log_durations(logger.debug)
-def get_fold_change_analysis(gse):
+def get_full_fold_change(gse):
     # TODO: get rid of unneeded OOP interface
     return GseAnalyzer(gse).getResults(debug=False)
 
@@ -179,7 +179,7 @@ def get_analysis_df(case_query, control_query, modifier_query=""):
     return df.dropna(subset=["sample_class"])
 
 @log_durations(logger.debug)
-def load_gse(df, series_id):
+def load_gse(df, series_id, impute = False):
     gse_name = series_gse_name(series_id)
     logger.debug('Loading data for %s, id = %d', gse_name, series_id)
     gpl2data = {}
@@ -187,7 +187,7 @@ def load_gse(df, series_id):
 
     for platform_id in df.query("""series_id == %s""" % series_id).platform_id.unique():
         gpl_name = platform_gpl_name(platform_id)
-        gpl2data[gpl_name] = get_data(series_id, platform_id)
+        gpl2data[gpl_name] = get_data(series_id, platform_id, impute=impute)
         gpl2data[gpl_name].to_csv("%s.%s.csv"%(gse_name, gpl_name))
         gpl2probes[gpl_name] = get_probes(platform_id)
     samples = df.query('series_id == %s' % series_id)
@@ -211,48 +211,48 @@ def platform_gpl_name(platform_id):
     return query_record(platform_id, "platform")['gpl_name']
 
 
-def __getMatrixNumHeaderLines(inStream):
-    p = re.compile(r'^"ID_REF"')
-    for i, line in enumerate(inStream):
-        if p.search(line):
-            return i
+# def __getMatrixNumHeaderLines(inStream):
+#     p = re.compile(r'^"ID_REF"')
+#     for i, line in enumerate(inStream):
+#         if p.search(line):
+#             return i
+#
+
+# def matrix_filenames(series_id, platform_id):
+#     gse_name = series_gse_name(series_id)
+#     yield "%s/%s_series_matrix.txt.gz" % (gse_name, gse_name)
+#
+#     gpl_name = platform_gpl_name(platform_id)
+#     yield "%s/%s-%s_series_matrix.txt.gz" % (gse_name, gse_name, gpl_name)
 
 
-def matrix_filenames(series_id, platform_id):
-    gse_name = series_gse_name(series_id)
-    yield "%s/%s_series_matrix.txt.gz" % (gse_name, gse_name)
-
-    gpl_name = platform_gpl_name(platform_id)
-    yield "%s/%s-%s_series_matrix.txt.gz" % (gse_name, gse_name, gpl_name)
-
-
-def get_matrix_filename(series_id, platform_id):
-    filenames = list(matrix_filenames(series_id, platform_id))
-    mirror_filenames = (os.path.join(conf.SERIES_MATRIX_MIRROR, filename) for filename in filenames)
-    mirror_filename = first(filename for filename in mirror_filenames if os.path.isfile(filename))
-    if mirror_filename:
-        return mirror_filename
-
-    for filename in filenames:
-        logger.info('Loading URL %s...' % (conf.SERIES_MATRIX_URL + filename))
-        try:
-            res = urllib2.urlopen(conf.SERIES_MATRIX_URL + filename)
-        except urllib2.URLError:
-            pass
-        else:
-            mirror_filename = os.path.join(conf.SERIES_MATRIX_MIRROR, filename)
-            logger.info('Cache to %s' % mirror_filename)
-
-            directory = os.path.dirname(mirror_filename)
-            if not os.path.exists(directory):
-                os.makedirs(directory)
-            with open(mirror_filename, 'wb') as f:
-                shutil.copyfileobj(res, f)
-
-            return mirror_filename
-
-    raise LookupError("Can't find matrix file for series %s, platform %s"
-                      % (series_id, platform_id))
+# def get_matrix_filename(series_id, platform_id):
+#     filenames = list(matrix_filenames(series_id, platform_id))
+#     mirror_filenames = (os.path.join(conf.SERIES_MATRIX_MIRROR, filename) for filename in filenames)
+#     mirror_filename = first(filename for filename in mirror_filenames if os.path.isfile(filename))
+#     if mirror_filename:
+#         return mirror_filename
+#
+#     for filename in filenames:
+#         logger.info('Loading URL %s...' % (conf.SERIES_MATRIX_URL + filename))
+#         try:
+#             res = urllib2.urlopen(conf.SERIES_MATRIX_URL + filename)
+#         except urllib2.URLError:
+#             pass
+#         else:
+#             mirror_filename = os.path.join(conf.SERIES_MATRIX_MIRROR, filename)
+#             logger.info('Cache to %s' % mirror_filename)
+#
+#             directory = os.path.dirname(mirror_filename)
+#             if not os.path.exists(directory):
+#                 os.makedirs(directory)
+#             with open(mirror_filename, 'wb') as f:
+#                 shutil.copyfileobj(res, f)
+#
+#             return mirror_filename
+#
+#     raise LookupError("Can't find matrix file for series %s, platform %s"
+#                       % (series_id, platform_id))
 
 
 # @log_durations(logger.debug)
@@ -315,41 +315,41 @@ class Gse:
         return '<Gse %s>' % self.name
 
 
-def getFullMetaAnalysis(fcResults, debug=False):
-    debug and fcResults.to_csv("%s.fc.csv" % debug)
+def get_full_meta(fold_change, debug=False):
+    debug and fold_change.to_csv("%s.fc.csv" % debug)
     all = []
     # i = 0
-    allGeneEstimates = fcResults.sort('p') \
+    all_gene_fold_change = fold_change.sort('p') \
         .drop_duplicates(['gse', 'gpl', 'mygene_sym', 'mygene_entrez', 'subset']) \
         .dropna()
-    debug and allGeneEstimates.to_csv("%s.geneestimates.csv" % debug)
-    for group, geneEstimates in allGeneEstimates.groupby(['mygene_sym', 'mygene_entrez']):
+    debug and all_gene_fold_change.to_csv("%s.geneestimates.csv" % debug)
+    for group, gene_fold_change in all_gene_fold_change.groupby(['mygene_sym', 'mygene_entrez']):
         mygene_sym, mygene_entrez = group
         # if debug:
         #     print i, group
         # i += 1
-        if len(geneEstimates) == 1:
+        if len(gene_fold_change) == 1:
             continue
         # if i > 10:
         #     break
-        metaAnalysis = getMetaAnalysis(geneEstimates)
-        metaAnalysis['caseDataCount'] = geneEstimates['caseDataCount'].sum()
-        metaAnalysis['controlDataCount'] = geneEstimates['controlDataCount'].sum()
+        metaAnalysis = get_gene_meta(gene_fold_change)
+        metaAnalysis['caseDataCount'] = gene_fold_change['caseDataCount'].sum()
+        metaAnalysis['controlDataCount'] = gene_fold_change['controlDataCount'].sum()
         metaAnalysis['mygene_sym'] = mygene_sym
         metaAnalysis['mygene_entrez'] = mygene_entrez
         all.append(metaAnalysis)
 
-    allMetaAnalysis = pd.DataFrame(all).set_index(['mygene_sym', 'mygene_entrez'])
-    debug and allMetaAnalysis.to_csv('allMetaAnalysis.csv')
-    allMetaAnalysis['direction'] = allMetaAnalysis['random_TE'].map(
+    full_meta_analysis = pd.DataFrame(all).set_index(['mygene_sym', 'mygene_entrez'])
+    debug and full_meta_analysis.to_csv('full_meta_analysis.csv')
+    full_meta_analysis['direction'] = full_meta_analysis['random_TE'].map(
         lambda x: "up" if x >= 0 else "down")
 
-    return allMetaAnalysis
+    return full_meta_analysis
 
 
 # @dcache_new.cached
-def getMetaAnalysis(geneEstimates):
-    return MetaAnalyser(geneEstimates).get_results()
+def get_gene_meta(gene_fold_change):
+    return MetaAnalyser(gene_fold_change).get_results()
 
 
 class GseAnalyzer:
@@ -387,7 +387,7 @@ class GseAnalyzer:
             sample_class = df.ix[data.columns].sample_class
 
             debug = debug and debug + ".%s_%s_%s" % (self.gse.name, gpl, subset)
-            table = getFoldChangeAnalysis(data, sample_class,
+            table = get_fold_change(data, sample_class,
                                           debug=debug)
             debug and table.to_csv("%s.table.csv" % debug)
 
@@ -577,7 +577,7 @@ class MetaAnalyser:
         )
 
 
-def getFoldChangeAnalysis(data, sample_class, debug=False):
+def get_fold_change(data, sample_class, debug=False):
     from scipy.stats import ttest_ind
 
     data = normalize_quantiles(log_data(data))
@@ -724,7 +724,6 @@ def combat(df):
 #     return translate_negative_cols(np.log2(data))
 
 
-
 if __name__ == "__main__":
     # tokens = "MB_Group4","MB_Group3", "MB_SHH", "MB_WNT", "MB_unlabeled"
     # labels = query_tags_annotations(tokens)
@@ -768,5 +767,18 @@ if __name__ == "__main__":
     #     modifier_query = """Dengue_Acute=="Dengue_Acute" or Dengue_Early_Acute=='Dengue_Early_Acute' or Dengue_Late_Acute == 'Dengue_Late_Acute' or Dengue_DOF <= 7""",
     #     min_samples = 3
     # )
-    analysis = perform_analysis(analysis=analysis)
+
+    analysis = EasyDict(
+        analysis_name = "test",
+        case_query = """ PHT == 'PHT' or hypertension == 'hypertension' """,
+        control_query = """PHT_Control == 'PHT_Control' or hypertension_control == 'hypertension_control'""",
+        modifier_query = "",
+        min_samples = 3
+    )
+
+
+
+    fc, analysis = perform_analysis(analysis=analysis)
     analysis.to_csv("analysis.csv")
+
+
