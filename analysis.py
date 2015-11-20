@@ -211,6 +211,9 @@ def platform_gpl_name(platform_id):
     return query_record(platform_id, "platform")['gpl_name']
 
 
+def query_gsm_names(gse_name):
+    sql = "select * from series inner join sample on series.id = series_id where gse_name = '%s'"%gse_name
+    return list(pd.read_sql(sql, conn)['gsm_name'])
 # def __getMatrixNumHeaderLines(inStream):
 #     p = re.compile(r'^"ID_REF"')
 #     for i, line in enumerate(inStream):
@@ -681,6 +684,33 @@ def combine_samples(names):
     return combined_samples
 
 
+def save_upcs(gse_name):
+    import random, glob
+    for gsm_name in random.shuffle(gsm_names):
+        upc = query_upc(gsm_name)
+
+
+def query_upc(gsm_name):
+    import glob
+    filename = os.path.join(conf.CSV_CACHE, "%s.upc.csv"%(gsm_name))
+    if glob.glob(filename):
+        upc = pd.read_csv(filename, index_col=0)
+    else:
+        r.library("SCAN.UPC")
+        r_matrix = r.exprs(r.UPC(gsm_name))
+        upc = pd.DataFrame(np.asmatrix(r_matrix))
+        upc.index = list(r_matrix.rownames)
+        upc.columns = list(r_matrix.colnames)
+        upc.to_csv(filename)
+    return upc
+
+def save_upcs(gsm_names):
+    import random
+    gsm_names = list(gsm_names)
+    random.shuffle(gsm_names)
+    for gsm_name in gsm_names:
+        print gsm_name
+        query_upc(gsm_name)
 def combat(df):
     names = df[['gse_name', 'gpl_name']].drop_duplicates().to_records(index=False)
     # drop genes with missing data
@@ -725,6 +755,12 @@ def combat(df):
 
 
 if __name__ == "__main__":
+    tokens = "MB_Group4","MB_Group3", "MB_SHH", "MB_WNT", "MB_unlabeled"
+    labels = query_tags_annotations(tokens)
+    save_upcs(labels.gsm_name.tolist())
+    1/0
+    print query_upc("GSM555237")
+    1/0
     # tokens = "MB_Group4","MB_Group3", "MB_SHH", "MB_WNT", "MB_unlabeled"
     # labels = query_tags_annotations(tokens)
     # labels = get_unique_annotations(labels)
