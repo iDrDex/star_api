@@ -697,15 +697,18 @@ def query_upc(gsm_name):
     r = rpy2.robjects.r
     filename = os.path.join(conf.CSV_CACHE, "%s.upc.csv"%(gsm_name))
     upc = None
+    print "working on", filename
     if glob.glob(filename):
         upc = pd.read_csv(filename, index_col=0)
     else:
         try:
+            print "STARTING R UPC"
             r.library("SCAN.UPC")
             r_matrix = r.exprs(r.UPC(gsm_name))
             upc = pd.DataFrame(np.asmatrix(r_matrix))
             upc.index = list(r_matrix.rownames)
             upc.columns = list(r_matrix.colnames)
+            print "SAVING R UPC"
             upc.to_csv(filename)
         except rpy2.rinterface.RRuntimeError as e:
             print e.message
