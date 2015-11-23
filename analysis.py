@@ -717,6 +717,7 @@ def save_upcs(gsm_names):
     for gsm_name in gsm_names:
         print gsm_name
         query_upc(gsm_name)
+
 def combat(df):
     names = df[['gse_name', 'gpl_name']].drop_duplicates().to_records(index=False)
     # drop genes with missing data
@@ -763,7 +764,7 @@ def combat(df):
 if __name__ == "__main__":
     tokens = "MB_Group4","MB_Group3", "MB_SHH", "MB_WNT", "MB_unlabeled"
     labels = query_tags_annotations(tokens)
-    save_upcs(labels.gsm_name.tolist())
+    save_upcs(labels.gsm_name.unique().tolist())
     1/0
     print query_upc("GSM555237")
     1/0
