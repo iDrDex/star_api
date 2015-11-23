@@ -151,7 +151,7 @@ def query_data(gse_name, gpl_name, impute=False):
 
 
 def query_tags_annotations(tokens):
-    df = pd.read_sql_query('''
+    df = pd.read_sql('''
         SELECT
             sample_id,
             sample.gsm_name,

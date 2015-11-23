@@ -692,7 +692,9 @@ def save_upcs(gse_name):
 
 def query_upc(gsm_name):
     import glob
+    import rpy2.robjects
     import rpy2.rinterface
+    r = rpy2.robjects.r
     filename = os.path.join(conf.CSV_CACHE, "%s.upc.csv"%(gsm_name))
     upc = None
     if glob.glob(filename):
