@@ -72,15 +72,15 @@ def get_data(series_id, platform_id, impute = False):
             if attempt:
                 raise
             matrixFilename = get_matrix_filename(series_id, platform_id)
-    data.to_csv("data.csv")
+    # data.to_csv("data.csv")
     data = clean_data(data) #drop samples
-    data.to_csv("clean.data.csv")
+    # data.to_csv("clean.data.csv")
     if len(data.columns) == 1:
         data = data.dropna()
     elif impute:
         data = impute_data(data)
     data = log_data(data) #logc
-    data.to_csv("log.data.csv")
+    # data.to_csv("log.data.csv")
 
     data.index = data.index.astype(str)
     data.index.name = "probe"
@@ -88,7 +88,7 @@ def get_data(series_id, platform_id, impute = False):
     for column in data.columns:
         data[column] = data[column].astype(np.float64)
 
-    data.to_csv("float64.data.csv")
+    # data.to_csv("float64.data.csv")
     return data
 
 
