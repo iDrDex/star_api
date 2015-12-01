@@ -188,7 +188,7 @@ def load_gse(df, series_id, impute = False):
     for platform_id in df.query("""series_id == %s""" % series_id).platform_id.unique():
         gpl_name = platform_gpl_name(platform_id)
         gpl2data[gpl_name] = get_data(series_id, platform_id, impute=impute)
-        gpl2data[gpl_name].to_csv("%s.%s.csv"%(gse_name, gpl_name))
+        # gpl2data[gpl_name].to_csv("%s.%s.csv"%(gse_name, gpl_name))
         gpl2probes[gpl_name] = get_probes(platform_id)
     samples = df.query('series_id == %s' % series_id)
     return Gse(gse_name, samples, gpl2data, gpl2probes)
