@@ -692,9 +692,7 @@ def save_upcs(gse_name):
 
 def query_upc(gsm_name):
     import glob
-    import rpy2.robjects
     import rpy2.rinterface
-    r = rpy2.robjects.r
     filename = os.path.join(conf.CSV_CACHE, "%s.upc.csv"%(gsm_name))
     upc = None
     print "working on", filename
@@ -767,12 +765,27 @@ def combat(df):
 
 
 if __name__ == "__main__":
-    tokens = "MB_Group4","MB_Group3", "MB_SHH", "MB_WNT", "MB_unlabeled"
-    labels = query_tags_annotations(tokens)
-    save_upcs(labels.gsm_name.unique().tolist())
+    queries = pd.read_table("https://raw.githubusercontent.com/dhimmel/star_api/master/data/files.tsv")
+    for i, row in queries.iterrows():
+        analysis = EasyDict(
+            analysis_name = row['slim_name'],
+                case_query = row['case_query'],
+                control_query = row['control_query'],
+                modifier_query = "",
+                min_samples = 3
+            )
+        print analysis
+        fc, analysis = perform_analysis(analysis=analysis)
+        analysis.to_csv("%s.csv"%row['slim_name'])
+
     1/0
-    print query_upc("GSM555237")
-    1/0
+
+    # tokens = "MB_Group4","MB_Group3", "MB_SHH", "MB_WNT", "MB_unlabeled"
+    # labels = query_tags_annotations(tokens)
+    # save_upcs(labels.gsm_name.unique().tolist())
+    # 1/0
+    # print query_upc("GSM555237")
+    # 1/0
     # tokens = "MB_Group4","MB_Group3", "MB_SHH", "MB_WNT", "MB_unlabeled"
     # labels = query_tags_annotations(tokens)
     # labels = get_unique_annotations(labels)
@@ -824,6 +837,13 @@ if __name__ == "__main__":
         min_samples = 3
     )
 
+    analysis = EasyDict(
+        analysis_name = "test",
+        case_query = """ T1D == 'T1D' """,
+        control_query = """T1D_Control == 'T1D_Control'""",
+        modifier_query = "",
+        min_samples = 3
+    )
 
 
     fc, analysis = perform_analysis(analysis=analysis)
