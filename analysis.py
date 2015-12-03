@@ -66,9 +66,13 @@ def get_balanced_permutations(balanced, permutations):
             balanced_permutations = balanced.join(df)
     return  balanced_permutations
 
+
 @log_durations(logger.debug)
-def perform_analysis(analysis, debug=False, impute = False, nperm = 0):
+def perform_analysis(analysis, debug=False, impute = False, nperm = 0, mygene_filter = None):
     logger.info('Started %s analysis', analysis.analysis_name)
+    # from multiprocessing import Pool
+    # pool = Pool(processes=4)
+
     with log_durations(logger.debug, 'Loading dataframe for %s' % analysis.analysis_name):
         df = get_analysis_df(analysis.case_query, analysis.control_query, analysis.modifier_query)
     debug and df.to_csv("%s.analysis_df.csv" % analysis.analysis_name)
@@ -109,11 +113,24 @@ def perform_analysis(analysis, debug=False, impute = False, nperm = 0):
     logger.info('Loading data and calculating fold change for %s', analysis.analysis_name)
     with log_durations(logger.debug, 'Load/fold for %s' % analysis.analysis_name):
         gses = (load_gse(df, series_id, impute) for series_id in sorted(df.series_id.unique()))
+        # gses = [load_gse(df, series_id, impute) for series_id in sorted(df.series_id.unique())]
+
+        # def f(series_id):
+        #     return load_gse(df, series_id, impute)
+        # # f = lambda series_id: load_gse(df, series_id, impute)
+        # gses = pool.map(f, list(df.series_id.unique()))
+        #
+
+        # gses = map(multi_run_wrapper, [(df, series_id, impute) for series_id in sorted(df.series_id.unique())])
 
         # test_gses = [load_gse(df, series_id, impute) for series_id in sorted(df.series_id.unique())]
         debugs = [debug]*df.series_id.nunique()
         nperms = [nperm]*df.series_id.nunique()
-        fold_change = pd.concat(imap(get_gene_fold_change, gses, debugs, nperms))
+        mygene_filters = [mygene_filter]*df.series_id.nunique()
+
+        # start a pool with 4 processes
+        fold_change = pd.concat(imap(get_gene_fold_change, gses, debugs, nperms, mygene_filters))
+        # fold_change = pd.concat(pool.imap(multi_run_wrapper, zip(gses, debugs, nperms)))
         debug and fold_change.to_csv("%s.fc.csv" % debug)
 
     #Start metaanalysis
@@ -159,7 +176,7 @@ def filter_sources(df, query, reason):
 # @dcache.checked
 # @dcache_new.cached
 @log_durations(logger.debug)
-def get_gene_fold_change(gse, debug=False, nperm=0):
+def get_gene_fold_change(gse, debug=False, nperm=0, mygene_filter = None):
     samples = gse.samples
 
     if 'subset' not in samples.columns:
@@ -180,9 +197,20 @@ def get_gene_fold_change(gse, debug=False, nperm=0):
 
         df = df.set_index("gsm_name")
         data = gse.gpl2data[gpl][df.index]
-        # Drop samples with > 80% missing samples
-        # data = data.dropna(axis=1, thresh=data.shape[0] * .2)
+        probes = gse.gpl2probes[gpl]
 
+        if mygene_filter is None: #filter probes for all genes
+            mygene_filter = probes.dropna(subset=['mygene_sym', 'mygene_entrez'])\
+                .set_index(['mygene_sym', 'mygene_entrez'])\
+                .index.unique()
+
+        mygene_probes = probes.reset_index()\
+            .sort(['mygene_sym', 'mygene_entrez'])\
+            .set_index(['mygene_sym', 'mygene_entrez'])
+
+        mygene_filter = mygene_probes.index.intersection(mygene_filter).unique()
+
+        data = data.ix[mygene_probes.ix[mygene_filter].probe]
         sample_class = df.ix[data.columns].sample_class
 
         debug = debug and debug + ".%s_%s_%s" % (gse.name, gpl, subset)
@@ -192,6 +220,10 @@ def get_gene_fold_change(gse, debug=False, nperm=0):
 
             fold_change = get_fold_change(data, sample_class,
                                           debug=debug)
+            fold_change = fold_change \
+                    .join(probes[['mygene_entrez', 'mygene_sym']]) \
+                    .dropna(subset=['mygene_entrez', 'mygene_sym'])
+
             debug and fold_change.to_csv("%s.table.csv" % debug)
 
             if not fold_change.empty:
@@ -201,10 +233,7 @@ def get_gene_fold_change(gse, debug=False, nperm=0):
                 fold_change['gpl'] = gpl
                 fold_change['gse'] = gse.name
                 fold_change['perm'] = perm
-                probes = gse.gpl2probes[gpl]
-                fold_change = fold_change \
-                    .join(probes[['mygene_entrez', 'mygene_sym']]) \
-                    .dropna(subset=['mygene_entrez', 'mygene_sym'])
+
                 allResults = pd.concat([allResults, fold_change.reset_index()])
     return allResults
 
@@ -617,7 +646,7 @@ class MetaAnalyser:
             Q_df=self.Q_df,
         )
 
-
+# @log_durations(logger.debug)
 def get_fold_change(data, sample_class, debug=False):
     from scipy.stats import ttest_ind
 
@@ -860,7 +889,7 @@ if __name__ == "__main__":
 
 
     analysis = EasyDict(
-        analysis_name = "severe_dengue",
+        analysis_name = "severe_dengue_top",
         case_query = """DHF=='DHF' or DSS=='DSS'""",
         control_query = """DF=='DF'""",
         modifier_query = """Dengue_Acute=="Dengue_Acute" or Dengue_Early_Acute=='Dengue_Early_Acute' or Dengue_Late_Acute == 'Dengue_Late_Acute' or Dengue_DOF <= 7""",
@@ -883,9 +912,20 @@ if __name__ == "__main__":
     #     min_samples = 3
     # )
 
+    dengue_100_perm = pd.read_csv("dengue_perm_analysis.csv", dtype = dict(mygene_entrez=int))
+    dengue_100_perm['random_TE_abs'] = dengue_100_perm.random_TE.abs()
+    dengue_100_perm['fixed_TE_abs'] = dengue_100_perm.fixed_TE.abs()
+    mygene_filter = dengue_100_perm\
+        .query("""random_rank == 0 and fixed_rank == 0 """)\
+        .set_index(['mygene_sym', 'mygene_entrez'])\
+        .index.unique()
+    print "mygene_filter of", len(mygene_filter), "genes"
 
     nperm = 1000
-    fc, results, permutations = perform_analysis(analysis=analysis, nperm=nperm)
+    fc, results, permutations = perform_analysis(analysis=analysis,
+                                                 impute=False,
+                                                 nperm=nperm,
+                                                 mygene_filter=mygene_filter)
     basename = "%s.%s_perm"%(analysis.analysis_name, nperm)
     results.to_csv(basename + ".results.csv")
     fc.to_csv(basename + ".fc.csv")
