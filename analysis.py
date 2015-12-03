@@ -24,8 +24,50 @@ ch.setLevel(logging.DEBUG)
 logger.addHandler(fh)
 logger.addHandler(ch)
 
+def sanitize(filename):
+    return "".join([c for c in filename if c.isalpha() or c.isdigit() or c==' ']).rstrip()
+
 @log_durations(logger.debug)
-def perform_analysis(analysis, debug=False, impute = False):
+def get_balanced_permutations(balanced, permutations):
+    balanced_permutations = balanced
+    if not permutations.empty:
+        logger.info('Estimating significance by permutation for %s' % analysis.analysis_name)
+        with log_durations(logger.debug, 'Estimating significance by permutation for %s' % analysis.analysis_name):
+            recs = []
+            permutations.sort_index(inplace=True)#to speed lookups
+            # permutations.to_csv("permutations.csv")
+            for mygene in balanced.index:
+                perms = permutations.ix[mygene]
+                random_TE = balanced.ix[mygene].random_TE
+                random_side = 'right' if random_TE > 0 else "left"
+                random_perms = perms.random_TE.order()
+                random_nperms = random_perms.count()
+                random_rank = random_perms.searchsorted(random_TE, side=random_side)[0]
+                if random_side == "right":
+                    random_rank  = random_nperms - random_rank
+                random_pval_perm = float(random_rank)/random_nperms
+                fixed_TE = balanced.ix[mygene].fixed_TE
+                fixed_side = 'right' if fixed_TE > 0 else "left"
+                fixed_perms = perms.fixed_TE.order()
+                fixed_nperms = fixed_perms.count()
+                fixed_rank = fixed_perms.searchsorted(fixed_TE, side=fixed_side)[0]
+                if fixed_side == "right":
+                    fixed_rank  = fixed_nperms - fixed_rank
+                fixed_pval_perm = float(fixed_rank)/fixed_nperms
+                rec = dict(random_rank = random_rank,
+                           random_nperms = random_nperms,
+                           random_pval_perm = random_pval_perm,
+                           fixed_rank = fixed_rank,
+                           fixed_nperms = fixed_nperms,
+                           fixed_pval_perm = fixed_pval_perm)
+                recs.append(rec)
+            df = pd.DataFrame(recs)
+            df.index = balanced.index
+            balanced_permutations = balanced.join(df)
+    return  balanced_permutations
+
+@log_durations(logger.debug)
+def perform_analysis(analysis, debug=False, impute = False, nperm = 0):
     logger.info('Started %s analysis', analysis.analysis_name)
     with log_durations(logger.debug, 'Loading dataframe for %s' % analysis.analysis_name):
         df = get_analysis_df(analysis.case_query, analysis.control_query, analysis.modifier_query)
@@ -67,27 +109,37 @@ def perform_analysis(analysis, debug=False, impute = False):
     logger.info('Loading data and calculating fold change for %s', analysis.analysis_name)
     with log_durations(logger.debug, 'Load/fold for %s' % analysis.analysis_name):
         gses = (load_gse(df, series_id, impute) for series_id in sorted(df.series_id.unique()))
-        fold_change = pd.concat(imap(get_full_fold_change, gses))
+
+        # test_gses = [load_gse(df, series_id, impute) for series_id in sorted(df.series_id.unique())]
+        debugs = [debug]*df.series_id.nunique()
+        nperms = [nperm]*df.series_id.nunique()
+        fold_change = pd.concat(imap(get_gene_fold_change, gses, debugs, nperms))
         debug and fold_change.to_csv("%s.fc.csv" % debug)
 
+    #Start metaanalysis
     logger.info('Meta-Analyzing %s', analysis.analysis_name)
     with log_durations(logger.debug, 'Meta analysis for %s' % analysis.analysis_name):
-        balanced = get_full_meta(fold_change, debug=debug).reset_index()
-        debug and balanced.to_csv("%s.meta.csv" % debug)
-
-    # logger.info('Inserting %s analysis results', analysis.analysis_name)
-    # with log_durations(logger.debug, 'Saving results of %s' % analysis.analysis_name):#, \
-    #         # transaction.atomic():
-    #     balanced['analysis'] = analysis
-    #     balanced.columns = balanced.columns.map(lambda x: x.replace(".", "_").lower())
-        # field_names = [f.name for f in MetaAnalysis._meta.fields if f.name != 'id']
-        # rows = balanced[field_names].T.to_dict().values()
-        # Delete old values in case we recalculating analysis
-        # MetaAnalysis.objects.filter(analysis=analysis).delete()
-        # MetaAnalysis.objects.bulk_create(MetaAnalysis(**row) for row in rows)
+        # logger.info('Meta analysis of real data for %s' % analysis.analysis_name)
+        with log_durations(logger.debug, 'meta analysis of real data for %s' % analysis.analysis_name):
+            balanced = get_full_meta(fold_change.query("""perm == 0"""), debug=debug)
+            debug and balanced.to_csv("%s.meta.csv" % debug)
+        # logger.info('Meta-Analyzing of permutations for %s', analysis.analysis_name)
+        with log_durations(logger.debug, 'meta analysis of permutations for %s' % analysis.analysis_name):
+            permutations = pd.DataFrame()
+            fold_change = fold_change.reset_index().sort('perm').set_index('perm')
+            for i in range(nperm):
+                perm = i + 1
+                # logger.info('Meta analysis of permutation %s for %s' % (perm, analysis.analysis_name))
+                with log_durations(logger.debug, 'meta analysis of permutation %s / %s for %s' % (perm, nperm, analysis.analysis_name)):
+                    # balanced_perm = get_full_meta(fold_change.query("""perm == %s"""%perm), debug=debug)
+                    balanced_perm = get_full_meta(fold_change.ix[perm], debug=debug)
+                    permutation = balanced_perm[['random_TE', 'fixed_TE']]
+                    permutation['perm'] = perm
+                    permutations = pd.concat([permutations, permutation])
+        balanced_permutations = get_balanced_permutations(balanced, permutations)
 
     logger.info('DONE %s analysis', analysis.analysis_name)
-    return fold_change, balanced
+    return fold_change, balanced_permutations, permutations
 
 def filter_sources(df, query, reason):
     start_sources = df.groupby(['series_id', 'platform_id']).ngroups
@@ -107,20 +159,65 @@ def filter_sources(df, query, reason):
 # @dcache.checked
 # @dcache_new.cached
 @log_durations(logger.debug)
-def get_full_fold_change(gse):
-    # TODO: get rid of unneeded OOP interface
-    return GseAnalyzer(gse).getResults(debug=False)
+def get_gene_fold_change(gse, debug=False, nperm=0):
+    samples = gse.samples
+
+    if 'subset' not in samples.columns:
+        samples['subset'] = "NA"
+
+    groups = samples.ix[samples.sample_class >= 0] \
+        .groupby(['subset', 'gpl_name'])
+
+    allResults = pd.DataFrame()
+
+    for group, df in groups:
+        subset, gpl = group
+
+        # NOTE: if data has changed then sample ids could be different
+        if not set(df["gsm_name"]) <= set(gse.gpl2data[gpl].columns):
+            logger.info("skipping %s: sample ids mismatch" % gpl)
+            continue
+
+        df = df.set_index("gsm_name")
+        data = gse.gpl2data[gpl][df.index]
+        # Drop samples with > 80% missing samples
+        # data = data.dropna(axis=1, thresh=data.shape[0] * .2)
+
+        sample_class = df.ix[data.columns].sample_class
+
+        debug = debug and debug + ".%s_%s_%s" % (gse.name, gpl, subset)
+        for perm in range(nperm + 1):
+            if perm:
+                sample_class = np.random.permutation(sample_class)
+
+            fold_change = get_fold_change(data, sample_class,
+                                          debug=debug)
+            debug and fold_change.to_csv("%s.table.csv" % debug)
+
+            if not fold_change.empty:
+                fold_change['direction'] = fold_change.log2foldChange.map(
+                    lambda x: "up" if x > 0 else 'down')
+                fold_change['subset'] = subset
+                fold_change['gpl'] = gpl
+                fold_change['gse'] = gse.name
+                fold_change['perm'] = perm
+                probes = gse.gpl2probes[gpl]
+                fold_change = fold_change \
+                    .join(probes[['mygene_entrez', 'mygene_sym']]) \
+                    .dropna(subset=['mygene_entrez', 'mygene_sym'])
+                allResults = pd.concat([allResults, fold_change.reset_index()])
+    return allResults
 
 
-COLUMNS = {
-    'sample__id': 'sample_id',
-    'sample__gsm_name': 'gsm_name',
-    'annotation': 'annotation',
-    'serie_annotation__series__id': 'series_id',
-    'serie_annotation__platform__id': 'platform_id',
-    'serie_annotation__platform__gpl_name': 'gpl_name',
-    'serie_annotation__tag__tag_name': 'tag_name',
-}
+# COLUMNS = {
+#     'sample__id': 'sample_id',
+#     'sample__gsm_name': 'gsm_name',
+#     'annotation': 'annotation',
+#     'serie_annotation__series__id': 'series_id',
+#     'serie_annotation__platform__id': 'platform_id',
+#     'serie_annotation__platform__gpl_name': 'gpl_name',
+#     'serie_annotation__tag__tag_name': 'tag_name',
+# }
 
 @log_durations(logger.debug)
 def get_analysis_df(case_query, control_query, modifier_query=""):
@@ -318,7 +415,7 @@ class Gse:
         return '<Gse %s>' % self.name
 
 
-def get_full_meta(fold_change, debug=False):
+def get_full_meta(fold_change,  debug=False):
     debug and fold_change.to_csv("%s.fc.csv" % debug)
     all = []
     # i = 0
@@ -328,13 +425,8 @@ def get_full_meta(fold_change, debug=False):
     debug and all_gene_fold_change.to_csv("%s.geneestimates.csv" % debug)
     for group, gene_fold_change in all_gene_fold_change.groupby(['mygene_sym', 'mygene_entrez']):
         mygene_sym, mygene_entrez = group
-        # if debug:
-        #     print i, group
-        # i += 1
         if len(gene_fold_change) == 1:
             continue
-        # if i > 10:
-        #     break
         metaAnalysis = get_gene_meta(gene_fold_change)
         metaAnalysis['caseDataCount'] = gene_fold_change['caseDataCount'].sum()
         metaAnalysis['controlDataCount'] = gene_fold_change['controlDataCount'].sum()
@@ -354,60 +446,6 @@ def get_full_meta(fold_change, debug=False):
 def get_gene_meta(gene_fold_change):
     return MetaAnalyser(gene_fold_change).get_results()
 
-
-class GseAnalyzer:
-    def __init__(self, gse):
-        self.gse = gse
-
-    def getResults(self, debug=False):
-        gse = self.gse
-        samples = gse.samples
-
-        if 'subset' not in samples.columns:
-            samples['subset'] = "NA"
-
-        groups = samples.ix[samples.sample_class >= 0] \
-            .groupby(['subset', 'gpl_name'])
-
-        allResults = pd.DataFrame()
-
-        for group, df in groups:
-            subset, gpl = group
-            probes = gse.gpl2probes[gpl]
-
-            # NOTE: if data has changed then sample ids could be different
-            if not set(df["gsm_name"]) <= set(gse.gpl2data[gpl].columns):
-                logger.info("skipping %s: sample ids mismatch" % gpl)
-                continue
-
-            df = df.set_index("gsm_name")
-            data = gse.gpl2data[gpl][df.index]
-            # Drop samples with > 80% missing samples
-            # data = data.dropna(axis=1, thresh=data.shape[0] * .2)
-
-            myCols = ['mygene_sym', 'mygene_entrez']
-            table = pd.DataFrame(columns=myCols).set_index(myCols)
-            sample_class = df.ix[data.columns].sample_class
-
-            debug = debug and debug + ".%s_%s_%s" % (self.gse.name, gpl, subset)
-            table = get_fold_change(data, sample_class,
-                                          debug=debug)
-            debug and table.to_csv("%s.table.csv" % debug)
-
-            if not table.empty:
-                table['direction'] = table.log2foldChange.map(
-                    lambda x: "up" if x > 0 else 'down')
-                table['subset'] = subset
-                table['gpl'] = gpl
-                table['gse'] = self.gse.name
-                probes = gse.gpl2probes[gpl]
-                table = table \
-                    .join(probes[['mygene_entrez', 'mygene_sym']]) \
-                    .dropna(subset=['mygene_entrez', 'mygene_sym'])
-                allResults = pd.concat([allResults, table.reset_index()])
-        # allResults.index.name = "probe"
-        self.results = allResults
-        return allResults
 
 
 class MetaAnalyser:
@@ -765,20 +803,20 @@ def combat(df):
 
 
 if __name__ == "__main__":
-    queries = pd.read_table("https://raw.githubusercontent.com/dhimmel/star_api/master/data/files.tsv")
-    for i, row in queries.iterrows():
-        analysis = EasyDict(
-            analysis_name = row['slim_name'],
-                case_query = row['case_query'],
-                control_query = row['control_query'],
-                modifier_query = "",
-                min_samples = 3
-            )
-        print analysis
-        fc, analysis = perform_analysis(analysis=analysis)
-        analysis.to_csv("%s.csv"%row['slim_name'])
-
-    1/0
+    # queries = pd.read_table("https://raw.githubusercontent.com/dhimmel/star_api/master/data/files.tsv")
+    # for i, row in queries.iterrows():
+    #     analysis = EasyDict(
+    #         analysis_name = row['slim_name'],
+    #             case_query = row['case_query'],
+    #             control_query = row['control_query'],
+    #             modifier_query = "",
+    #             min_samples = 3
+    #         )
+    #     print analysis
+    #     fc, analysis = perform_analysis(analysis=analysis, nperm=10)
+    #     analysis.to_csv("%s.csv"%row['slim_name'])
+    #
+    # 1/0
 
     # tokens = "MB_Group4","MB_Group3", "MB_SHH", "MB_WNT", "MB_unlabeled"
     # labels = query_tags_annotations(tokens)
@@ -805,17 +843,8 @@ if __name__ == "__main__":
 
     analysis = EasyDict(
         analysis_name = "test",
-        case_query = """ MS == 'MS'""",
-        control_query = """MS_control == 'MS_control'""",
-        modifier_query = "",
-        min_samples = 3
-    )
-
-
-    analysis = EasyDict(
-        analysis_name = "test",
-        case_query = """Smoker == 'Smoker'""",# MS == 'MS'""",
-        control_query = """Nonsmoker == 'Nonsmoker'""",#"""MS_control == 'MS_control'""",
+        case_query = """ Senescent=='Senescent'""",
+        control_query = """Senescent_control=='Senescent_control'""",
         modifier_query = "",
         min_samples = 3
     )
@@ -823,30 +852,42 @@ if __name__ == "__main__":
 
     # analysis = EasyDict(
     #     analysis_name = "test",
-    #     case_query = """DHF=='DHF' or DSS=='DSS'""",
-    #     control_query = """DF=='DF'""",
-    #     modifier_query = """Dengue_Acute=="Dengue_Acute" or Dengue_Early_Acute=='Dengue_Early_Acute' or Dengue_Late_Acute == 'Dengue_Late_Acute' or Dengue_DOF <= 7""",
+    #     case_query = """Smoker == 'Smoker'""",# MS == 'MS'""",
+    #     control_query = """Nonsmoker == 'Nonsmoker'""",#"""MS_control == 'MS_control'""",
+    #     modifier_query = "",
     #     min_samples = 3
     # )
 
+
     analysis = EasyDict(
-        analysis_name = "test",
-        case_query = """ PHT == 'PHT' or hypertension == 'hypertension' """,
-        control_query = """PHT_Control == 'PHT_Control' or hypertension_control == 'hypertension_control'""",
-        modifier_query = "",
+        analysis_name = "severe_dengue",
+        case_query = """DHF=='DHF' or DSS=='DSS'""",
+        control_query = """DF=='DF'""",
+        modifier_query = """Dengue_Acute=="Dengue_Acute" or Dengue_Early_Acute=='Dengue_Early_Acute' or Dengue_Late_Acute == 'Dengue_Late_Acute' or Dengue_DOF <= 7""",
         min_samples = 3
     )
 
-    analysis = EasyDict(
-        analysis_name = "test",
-        case_query = """ T1D == 'T1D' """,
-        control_query = """T1D_Control == 'T1D_Control'""",
-        modifier_query = "",
-        min_samples = 3
-    )
+    # analysis = EasyDict(
+    #     analysis_name = "test",
+    #     case_query = """ PHT == 'PHT' or hypertension == 'hypertension' """,
+    #     control_query = """PHT_Control == 'PHT_Control' or hypertension_control == 'hypertension_control'""",
+    #     modifier_query = "",
+    #     min_samples = 3
+    # )
+    #
+    # analysis = EasyDict(
+    #     analysis_name = "test",
+    #     case_query = """ T1D == 'T1D' """,
+    #     control_query = """T1D_Control == 'T1D_Control'""",
+    #     modifier_query = "",
+    #     min_samples = 3
+    # )
 
 
-    fc, analysis = perform_analysis(analysis=analysis)
-    analysis.to_csv("analysis.csv")
-
+    nperm = 1000
+    fc, results, permutations = perform_analysis(analysis=analysis, nperm=nperm)
+    basename = "%s.%s_perm"%(analysis.analysis_name, nperm)
+    results.to_csv(basename + ".results.csv")
+    fc.to_csv(basename + ".fc.csv")
+    permutations.to_csv(basename + ".perm.csv")
 
