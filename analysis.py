@@ -185,7 +185,7 @@ def get_gene_fold_change(gse, debug=False, nperm=0, mygene_filter = None):
     groups = samples.ix[samples.sample_class >= 0] \
         .groupby(['subset', 'gpl_name'])
 
-    allResults = pd.DataFrame()
+    results_list = []
 
     for group, df in groups:
         subset, gpl = group
@@ -233,9 +233,9 @@ def get_gene_fold_change(gse, debug=False, nperm=0, mygene_filter = None):
                 fold_change['gpl'] = gpl
                 fold_change['gse'] = gse.name
                 fold_change['perm'] = perm
+                results_list.append(fold_change.reset_index())
 
-                allResults = pd.concat([allResults, fold_change.reset_index()])
-    return allResults
+    return pd.concat(results_list)
 
 
 # COLUMNS = {
