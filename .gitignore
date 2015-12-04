@@ -1,0 +1,4 @@
+*.pyc
+*.csv
+db_conf.py
+csv/*
