@@ -112,8 +112,8 @@ def perform_analysis(analysis, debug=False, impute = False, nperm = 0, mygene_fi
     # NOTE: we are doing load_gse() lazily here to avoid loading all matrices at once.
     logger.info('Loading data and calculating fold change for %s', analysis.analysis_name)
     with log_durations(logger.debug, 'Load/fold for %s' % analysis.analysis_name):
-        gses = (load_gse(df, series_id, impute) for series_id in sorted(df.series_id.unique()))
-        # gses = [load_gse(df, series_id, impute) for series_id in sorted(df.series_id.unique())]
+        # gses = (load_gse(df, series_id, impute) for series_id in sorted(df.series_id.unique()))
+        gses = [load_gse(df, series_id, impute) for series_id in sorted(df.series_id.unique())]
 
         # def f(series_id):
         #     return load_gse(df, series_id, impute)
@@ -185,7 +185,7 @@ def get_gene_fold_change(gse, debug=False, nperm=0, mygene_filter = None):
     groups = samples.ix[samples.sample_class >= 0] \
         .groupby(['subset', 'gpl_name'])
 
-    results_list = []
+    allResults = pd.DataFrame()
 
     for group, df in groups:
         subset, gpl = group
@@ -224,8 +224,6 @@ def get_gene_fold_change(gse, debug=False, nperm=0, mygene_filter = None):
                     .join(probes[['mygene_entrez', 'mygene_sym']]) \
                     .dropna(subset=['mygene_entrez', 'mygene_sym'])
 
-            debug and fold_change.to_csv("%s.table.csv" % debug)
-
             if not fold_change.empty:
                 fold_change['direction'] = fold_change.log2foldChange.map(
                     lambda x: "up" if x > 0 else 'down')
@@ -233,9 +231,10 @@ def get_gene_fold_change(gse, debug=False, nperm=0, mygene_filter = None):
                 fold_change['gpl'] = gpl
                 fold_change['gse'] = gse.name
                 fold_change['perm'] = perm
-                results_list.append(fold_change.reset_index())
 
-    return pd.concat(results_list)
+                allResults = pd.concat([allResults, fold_change.reset_index()])
+    debug and allResults.to_csv("%s.fc.csv" % debug)
+    return allResults
 
 
 # COLUMNS = {
@@ -861,14 +860,25 @@ if __name__ == "__main__":
 
     # tokens = "MB_Group4","MB_Cerebellum_Control", "GBM_samples", "GBM_controls"
     # labels = query_tags_annotations(tokens)
-    # # labels = get_annotations("""DHF=='DHF' or DSS=='DSS'""",
-    # #                 """DH=='DH'""",
-    # #                          """Dengue_Acute=="Dengue_Acute" or Dengue_Early_Acute=='Dengue_Early_Acute' or Dengue_Late_Acute == 'Dengue_Late_Acute' or Dengue_DOF < 10""")
-    #
-    # combat_matrix, samples  = combat(labels)
-    # # combat_matrix.to_csv("combat_brain.csv")
-    # # samples.to_csv("combat_brain_samples.csv")
-    # 1/0
+    labels = get_annotations("""DHF=='DHF' or DSS=='DSS'""",
+                    """DF=='DF'""",
+                             """Dengue_Acute=="Dengue_Acute" or Dengue_Early_Acute=='Dengue_Early_Acute' or Dengue_Late_Acute == 'Dengue_Late_Acute' or Dengue_DOF < 10""")
+
+
+
+    labels['annotation'] = None
+    for label in "df", "dhf", "dss":
+        labels.annotation[labels[label]==label]=label
+
+    labels['code'] = labels.gsm_name + "_" + labels.gpl_name + "_" + labels.gse_name
+    labels = labels.set_index('code')
+
+    combat_matrix, samples  = combat(labels)
+    combat_matrix.to_csv("combat_dengue.csv")
+    # combat_matrix.to_csv("combat_brain.csv")
+    samples.to_csv("combat_dengue_samples.csv")
+
+    1/0
 
     analysis = EasyDict(
         analysis_name = "test",
@@ -887,15 +897,6 @@ if __name__ == "__main__":
     #     min_samples = 3
     # )
 
-
-    analysis = EasyDict(
-        analysis_name = "severe_dengue_top",
-        case_query = """DHF=='DHF' or DSS=='DSS'""",
-        control_query = """DF=='DF'""",
-        modifier_query = """Dengue_Acute=="Dengue_Acute" or Dengue_Early_Acute=='Dengue_Early_Acute' or Dengue_Late_Acute == 'Dengue_Late_Acute' or Dengue_DOF <= 7""",
-        min_samples = 3
-    )
-
     # analysis = EasyDict(
     #     analysis_name = "test",
     #     case_query = """ PHT == 'PHT' or hypertension == 'hypertension' """,
@@ -912,7 +913,15 @@ if __name__ == "__main__":
     #     min_samples = 3
     # )
 
-    dengue_100_perm = pd.read_csv("dengue_perm_analysis.csv", dtype = dict(mygene_entrez=int))
+    analysis = EasyDict(
+        analysis_name = "severe_dengue_top",
+        case_query = """DHF=='DHF' or DSS=='DSS'""",
+        control_query = """DF=='DF'""",
+        modifier_query = """Dengue_Acute=="Dengue_Acute" or Dengue_Early_Acute=='Dengue_Early_Acute' or Dengue_Late_Acute == 'Dengue_Late_Acute' or Dengue_DOF <= 7""",
+        min_samples = 3
+    )
+
+    dengue_100_perm = pd.read_csv("severe_dengue_top.1000_perm.results.csv", dtype = dict(mygene_entrez=int))
     dengue_100_perm['random_TE_abs'] = dengue_100_perm.random_TE.abs()
     dengue_100_perm['fixed_TE_abs'] = dengue_100_perm.fixed_TE.abs()
     mygene_filter = dengue_100_perm\
@@ -921,13 +930,15 @@ if __name__ == "__main__":
         .index.unique()
     print "mygene_filter of", len(mygene_filter), "genes"
 
-    nperm = 1000
+    nperm = 10000
+    basename = "%s.%s_perm"%(analysis.analysis_name, nperm)
+
     fc, results, permutations = perform_analysis(analysis=analysis,
                                                  impute=False,
                                                  nperm=nperm,
-                                                 mygene_filter=mygene_filter)
-    basename = "%s.%s_perm"%(analysis.analysis_name, nperm)
+                                                 mygene_filter=mygene_filter,
+                                                 debug=basename)
     results.to_csv(basename + ".results.csv")
-    fc.to_csv(basename + ".fc.csv")
+    # fc.to_csv(basename + ".fc.csv")
     permutations.to_csv(basename + ".perm.csv")
 
