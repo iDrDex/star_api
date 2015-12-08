@@ -1,28 +1,18 @@
 import logging
+import re
 
-from main import *
 from easydict import EasyDict
 from funcy import first, log_durations, imap, memoize, cat, re_all
 import numpy as np
 import pandas as pd
 import scipy.stats as stats
 
-# ###connect to DB###
-# import conf, psycopg2, psycopg2.extras
-# conn = psycopg2.connect(conf.DB_PARAMATERS)
-# cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+import main
+from main import conn, cursor, get_data, log_data
 
 #### create logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
-# create file handler which logs even debug messages
-fh = logging.FileHandler('analysis.log')
-fh.setLevel(logging.DEBUG)
-# create console handler with a higher log level
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-logger.addHandler(fh)
-logger.addHandler(ch)
 
 def sanitize(filename):
     return "".join([c for c in filename if c.isalpha() or c.isdigit() or c==' ']).rstrip()
@@ -69,6 +59,9 @@ def get_balanced_permutations(balanced, permutations):
 
 @log_durations(logger.debug)
 def perform_analysis(analysis, debug=False, impute = False, nperm = 0, mygene_filter = None):
+    """
+    Returns a tuple of sample_df, fold_change, balanced_permutations, permutations
+    """
     logger.info('Started %s analysis', analysis.analysis_name)
     # from multiprocessing import Pool
     # pool = Pool(processes=4)
@@ -80,7 +73,7 @@ def perform_analysis(analysis, debug=False, impute = False, nperm = 0, mygene_fi
     logger.info('Matching sources: %d' % df.groupby(['series_id', 'platform_id']).ngroups)
 
     # Remove single-class sources
-    query = df.groupby(['series_id', 'platform_id']).sample_class.agg(lambda x: set(x)) >= {0, 1}
+    query = df.groupby(['series_id', 'platform_id']).sample_class.agg(lambda x: set(x)).map(lambda x: x >= {0, 1})
     df = filter_sources(df, query, 'as single-class')
 
     # Check for minimum number of samples
@@ -94,7 +87,7 @@ def perform_analysis(analysis, debug=False, impute = False, nperm = 0, mygene_fi
     if sources <= 1:
         logger.error("FAIL Can't perform meta-analysis on %s"
                      % ('single source' if sources else 'no data'))
-        return
+        return df, None, None, None
 
     # Calculating stats
     analysis.series_count = len(df.series_id.unique())
@@ -112,18 +105,7 @@ def perform_analysis(analysis, debug=False, impute = False, nperm = 0, mygene_fi
     # NOTE: we are doing load_gse() lazily here to avoid loading all matrices at once.
     logger.info('Loading data and calculating fold change for %s', analysis.analysis_name)
     with log_durations(logger.debug, 'Load/fold for %s' % analysis.analysis_name):
-        # gses = (load_gse(df, series_id, impute) for series_id in sorted(df.series_id.unique()))
-        gses = [load_gse(df, series_id, impute) for series_id in sorted(df.series_id.unique())]
-
-        # def f(series_id):
-        #     return load_gse(df, series_id, impute)
-        # # f = lambda series_id: load_gse(df, series_id, impute)
-        # gses = pool.map(f, list(df.series_id.unique()))
-        #
-
-        # gses = map(multi_run_wrapper, [(df, series_id, impute) for series_id in sorted(df.series_id.unique())])
-
-        # test_gses = [load_gse(df, series_id, impute) for series_id in sorted(df.series_id.unique())]
+        gses = (load_gse(df, series_id, impute) for series_id in sorted(df.series_id.unique()))
         debugs = [debug]*df.series_id.nunique()
         nperms = [nperm]*df.series_id.nunique()
         mygene_filters = [mygene_filter]*df.series_id.nunique()
@@ -156,7 +138,7 @@ def perform_analysis(analysis, debug=False, impute = False, nperm = 0, mygene_fi
         balanced_permutations = get_balanced_permutations(balanced, permutations)
 
     logger.info('DONE %s analysis', analysis.analysis_name)
-    return fold_change, balanced_permutations, permutations
+    return df, fold_change, balanced_permutations, permutations
 
 def filter_sources(df, query, reason):
     start_sources = df.groupby(['series_id', 'platform_id']).ngroups
@@ -167,14 +149,6 @@ def filter_sources(df, query, reason):
         logger.info('Excluded %d source%s %s'% (excluded, 's' if excluded > 1 else '', reason))
     return new_df
 
-
-# from debug_cache import DebugCache
-# dcache_new = DebugCache('/home/suor/projects/health/debug_cache_new')
-# dcache_tmp = DebugCache('/home/suor/projects/health/debug_cache_tmp')
-
-
-# @dcache.checked
-# @dcache_new.cached
 @log_durations(logger.debug)
 def get_gene_fold_change(gse, debug=False, nperm=0, mygene_filter = None):
     samples = gse.samples
@@ -185,7 +159,7 @@ def get_gene_fold_change(gse, debug=False, nperm=0, mygene_filter = None):
     groups = samples.ix[samples.sample_class >= 0] \
         .groupby(['subset', 'gpl_name'])
 
-    allResults = pd.DataFrame()
+    results_list = []
 
     for group, df in groups:
         subset, gpl = group
@@ -224,6 +198,8 @@ def get_gene_fold_change(gse, debug=False, nperm=0, mygene_filter = None):
                     .join(probes[['mygene_entrez', 'mygene_sym']]) \
                     .dropna(subset=['mygene_entrez', 'mygene_sym'])
 
+            debug and fold_change.to_csv("%s.table.csv" % debug)
+
             if not fold_change.empty:
                 fold_change['direction'] = fold_change.log2foldChange.map(
                     lambda x: "up" if x > 0 else 'down')
@@ -231,21 +207,10 @@ def get_gene_fold_change(gse, debug=False, nperm=0, mygene_filter = None):
                 fold_change['gpl'] = gpl
                 fold_change['gse'] = gse.name
                 fold_change['perm'] = perm
+                results_list.append(fold_change.reset_index())
 
-                allResults = pd.concat([allResults, fold_change.reset_index()])
-    debug and allResults.to_csv("%s.fc.csv" % debug)
-    return allResults
+    return pd.concat(results_list)
 
-
-# COLUMNS = {
-#     'sample__id': 'sample_id',
-#     'sample__gsm_name': 'gsm_name',
-#     'annotation': 'annotation',
-#     'serie_annotation__series__id': 'series_id',
-#     'serie_annotation__platform__id': 'platform_id',
-#     'serie_annotation__platform__gpl_name': 'gpl_name',
-#     'serie_annotation__tag__tag_name': 'tag_name',
-# }
 
 @log_durations(logger.debug)
 def get_analysis_df(case_query, control_query, modifier_query=""):
@@ -328,8 +293,6 @@ def query_record(id, table, id_field="id"):
 def series_gse_name(series_id):
     return query_record(series_id, "series")['gse_name']
 
-    # return Series.objects.values_list('id', 'gse_name')
-
 # @make_lookuper
 def platform_gpl_name(platform_id):
     # return Platform.objects.values_list('id', 'gpl_name')
@@ -339,98 +302,11 @@ def platform_gpl_name(platform_id):
 def query_gsm_names(gse_name):
     sql = "select * from series inner join sample on series.id = series_id where gse_name = '%s'"%gse_name
     return list(pd.read_sql(sql, conn)['gsm_name'])
-# def __getMatrixNumHeaderLines(inStream):
-#     p = re.compile(r'^"ID_REF"')
-#     for i, line in enumerate(inStream):
-#         if p.search(line):
-#             return i
-#
-
-# def matrix_filenames(series_id, platform_id):
-#     gse_name = series_gse_name(series_id)
-#     yield "%s/%s_series_matrix.txt.gz" % (gse_name, gse_name)
-#
-#     gpl_name = platform_gpl_name(platform_id)
-#     yield "%s/%s-%s_series_matrix.txt.gz" % (gse_name, gse_name, gpl_name)
-
-
-# def get_matrix_filename(series_id, platform_id):
-#     filenames = list(matrix_filenames(series_id, platform_id))
-#     mirror_filenames = (os.path.join(conf.SERIES_MATRIX_MIRROR, filename) for filename in filenames)
-#     mirror_filename = first(filename for filename in mirror_filenames if os.path.isfile(filename))
-#     if mirror_filename:
-#         return mirror_filename
-#
-#     for filename in filenames:
-#         logger.info('Loading URL %s...' % (conf.SERIES_MATRIX_URL + filename))
-#         try:
-#             res = urllib2.urlopen(conf.SERIES_MATRIX_URL + filename)
-#         except urllib2.URLError:
-#             pass
-#         else:
-#             mirror_filename = os.path.join(conf.SERIES_MATRIX_MIRROR, filename)
-#             logger.info('Cache to %s' % mirror_filename)
-#
-#             directory = os.path.dirname(mirror_filename)
-#             if not os.path.exists(directory):
-#                 os.makedirs(directory)
-#             with open(mirror_filename, 'wb') as f:
-#                 shutil.copyfileobj(res, f)
-#
-#             return mirror_filename
-#
-#     raise LookupError("Can't find matrix file for series %s, platform %s"
-#                       % (series_id, platform_id))
-
-
-# @log_durations(logger.debug)
-# def get_data(series_id, platform_id):
-#     matrixFilename = get_matrix_filename(series_id, platform_id)
-#     # setup data for specific platform
-#     for attempt in (0, 1):
-#         try:
-#             headerRows = __getMatrixNumHeaderLines(gzip.open(matrixFilename))
-#             na_values = ["null", "NA", "NaN", "N/A", "na", "n/a"]
-#             data = pd.io.parsers.read_table(gzip.open(matrixFilename),
-#                                             skiprows=headerRows,
-#                                             index_col=["ID_REF"],
-#                                             na_values=na_values,
-#                                             lineterminator='\n',
-#                                             engine='c')
-#             # Drop last line
-#             data.to_csv("data.1.csv")
-#             data = data.drop(data.index[-1]).dropna()
-#             break
-#         except IOError as e:
-#             # In case we have cirrupt file
-#             logger.error("Failed loading %s: %s" % (matrixFilename, e))
-#             os.remove(matrixFilename)
-#             if attempt:
-#                 raise
-#             matrixFilename = get_matrix_filename(series_id, platform_id)
-#
-#     data.index = data.index.astype(str)
-#     data.index.name = "probe"
-#     data.to_csv("data.2.csv")
-#
-#     for column in data.columns:
-#         data[column] = data[column].astype(np.float64)
-#
-#
-#     return data
-
 
 @log_durations(logger.debug)
 def get_probes(platform_id):
     sql = "select * from platform_probe where platform_id = %s"
     return pd.read_sql(sql, conn, "probe", params=(platform_id,))
-#     df = PlatformProbe.objects.filter(platform=platform_id).order_by('id').to_dataframe()
-#     # df = db(Platform_Probe.platform_id == platform_id).select(processor=pandas_processor)
-#     df.columns = [col.lower().replace("platform_probe.", "") for col in df.columns]
-#     df.probe = df.probe.astype(str)  # must cast probes as str
-#     df = df.set_index('probe')
-#     return df
-
 
 class Gse:
     def __init__(self, name, samples, gpl2data, gpl2probes):
@@ -818,127 +694,3 @@ def combat(df):
     combat_matrix.index = m.index
     combat_matrix.columns = m.columns
     return combat_matrix, samples
-
-# def is_logged(data):
-#     return True if (data.std() < 10).all() else False
-#
-#
-# def log_data(data):
-#     # if (data.var() > 10).all():
-#     if is_logged(data):
-#         return data
-#     return translate_negative_cols(np.log2(data))
-
-
-if __name__ == "__main__":
-    # queries = pd.read_table("https://raw.githubusercontent.com/dhimmel/star_api/master/data/files.tsv")
-    # for i, row in queries.iterrows():
-    #     analysis = EasyDict(
-    #         analysis_name = row['slim_name'],
-    #             case_query = row['case_query'],
-    #             control_query = row['control_query'],
-    #             modifier_query = "",
-    #             min_samples = 3
-    #         )
-    #     print analysis
-    #     fc, analysis = perform_analysis(analysis=analysis, nperm=10)
-    #     analysis.to_csv("%s.csv"%row['slim_name'])
-    #
-    # 1/0
-
-    # tokens = "MB_Group4","MB_Group3", "MB_SHH", "MB_WNT", "MB_unlabeled"
-    # labels = query_tags_annotations(tokens)
-    # save_upcs(labels.gsm_name.unique().tolist())
-    # 1/0
-    # print query_upc("GSM555237")
-    # 1/0
-    # tokens = "MB_Group4","MB_Group3", "MB_SHH", "MB_WNT", "MB_unlabeled"
-    # labels = query_tags_annotations(tokens)
-    # labels = get_unique_annotations(labels)
-    # combat_matrix, samples  = combat(labels.tail(300))
-    # 1/0
-
-    # tokens = "MB_Group4","MB_Cerebellum_Control", "GBM_samples", "GBM_controls"
-    # labels = query_tags_annotations(tokens)
-    labels = get_annotations("""DHF=='DHF' or DSS=='DSS'""",
-                    """DF=='DF'""",
-                             """Dengue_Acute=="Dengue_Acute" or Dengue_Early_Acute=='Dengue_Early_Acute' or Dengue_Late_Acute == 'Dengue_Late_Acute' or Dengue_DOF < 10""")
-
-
-
-    labels['annotation'] = None
-    for label in "df", "dhf", "dss":
-        labels.annotation[labels[label]==label]=label
-
-    labels['code'] = labels.gsm_name + "_" + labels.gpl_name + "_" + labels.gse_name
-    labels = labels.set_index('code')
-
-    combat_matrix, samples  = combat(labels)
-    combat_matrix.to_csv("combat_dengue.csv")
-    # combat_matrix.to_csv("combat_brain.csv")
-    samples.to_csv("combat_dengue_samples.csv")
-
-    1/0
-
-    analysis = EasyDict(
-        analysis_name = "test",
-        case_query = """ Senescent=='Senescent'""",
-        control_query = """Senescent_control=='Senescent_control'""",
-        modifier_query = "",
-        min_samples = 3
-    )
-
-
-    # analysis = EasyDict(
-    #     analysis_name = "test",
-    #     case_query = """Smoker == 'Smoker'""",# MS == 'MS'""",
-    #     control_query = """Nonsmoker == 'Nonsmoker'""",#"""MS_control == 'MS_control'""",
-    #     modifier_query = "",
-    #     min_samples = 3
-    # )
-
-    # analysis = EasyDict(
-    #     analysis_name = "test",
-    #     case_query = """ PHT == 'PHT' or hypertension == 'hypertension' """,
-    #     control_query = """PHT_Control == 'PHT_Control' or hypertension_control == 'hypertension_control'""",
-    #     modifier_query = "",
-    #     min_samples = 3
-    # )
-    #
-    # analysis = EasyDict(
-    #     analysis_name = "test",
-    #     case_query = """ T1D == 'T1D' """,
-    #     control_query = """T1D_Control == 'T1D_Control'""",
-    #     modifier_query = "",
-    #     min_samples = 3
-    # )
-
-    analysis = EasyDict(
-        analysis_name = "severe_dengue_top",
-        case_query = """DHF=='DHF' or DSS=='DSS'""",
-        control_query = """DF=='DF'""",
-        modifier_query = """Dengue_Acute=="Dengue_Acute" or Dengue_Early_Acute=='Dengue_Early_Acute' or Dengue_Late_Acute == 'Dengue_Late_Acute' or Dengue_DOF <= 7""",
-        min_samples = 3
-    )
-
-    dengue_100_perm = pd.read_csv("severe_dengue_top.1000_perm.results.csv", dtype = dict(mygene_entrez=int))
-    dengue_100_perm['random_TE_abs'] = dengue_100_perm.random_TE.abs()
-    dengue_100_perm['fixed_TE_abs'] = dengue_100_perm.fixed_TE.abs()
-    mygene_filter = dengue_100_perm\
-        .query("""random_rank == 0 and fixed_rank == 0 """)\
-        .set_index(['mygene_sym', 'mygene_entrez'])\
-        .index.unique()
-    print "mygene_filter of", len(mygene_filter), "genes"
-
-    nperm = 10000
-    basename = "%s.%s_perm"%(analysis.analysis_name, nperm)
-
-    fc, results, permutations = perform_analysis(analysis=analysis,
-                                                 impute=False,
-                                                 nperm=nperm,
-                                                 mygene_filter=mygene_filter,
-                                                 debug=basename)
-    results.to_csv(basename + ".results.csv")
-    # fc.to_csv(basename + ".fc.csv")
-    permutations.to_csv(basename + ".perm.csv")
-
