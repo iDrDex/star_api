@@ -150,7 +150,7 @@ def filter_sources(df, query, reason):
     return new_df
 
 @log_durations(logger.debug)
-def get_gene_fold_change(gse, debug=False, nperm=0, mygene_filter = None):
+def get_gene_fold_change(gse, debug=False, nperm=0, mygene_filter=None):
     samples = gse.samples
 
     if 'subset' not in samples.columns:
@@ -173,18 +173,16 @@ def get_gene_fold_change(gse, debug=False, nperm=0, mygene_filter = None):
         data = gse.gpl2data[gpl][df.index]
         probes = gse.gpl2probes[gpl]
 
-        if mygene_filter is None: #filter probes for all genes
-            mygene_filter = probes.dropna(subset=['mygene_sym', 'mygene_entrez'])\
-                .set_index(['mygene_sym', 'mygene_entrez'])\
-                .index.unique()
-
         mygene_probes = probes.reset_index()\
             .sort(['mygene_sym', 'mygene_entrez'])\
             .set_index(['mygene_sym', 'mygene_entrez'])
 
-        mygene_filter = mygene_probes.index.intersection(mygene_filter).unique()
-
-        data = data.ix[mygene_probes.ix[mygene_filter].probe]
+        if mygene_filter:
+            mygene_filter = mygene_probes.index.intersection(mygene_filter).unique()
+            data = data.ix[mygene_probes.ix[mygene_filter].probe]
+        else:
+            data = data.ix[mygene_probes.probe]
+        data = normalize_quantiles(log_data(data))
         sample_class = df.ix[data.columns].sample_class
 
         debug = debug and debug + ".%s_%s_%s" % (gse.name, gpl, subset)
@@ -198,18 +196,17 @@ def get_gene_fold_change(gse, debug=False, nperm=0, mygene_filter = None):
                     .join(probes[['mygene_entrez', 'mygene_sym']]) \
                     .dropna(subset=['mygene_entrez', 'mygene_sym'])
 
-            debug and fold_change.to_csv("%s.table.csv" % debug)
-
             if not fold_change.empty:
-                fold_change['direction'] = fold_change.log2foldChange.map(
-                    lambda x: "up" if x > 0 else 'down')
                 fold_change['subset'] = subset
                 fold_change['gpl'] = gpl
                 fold_change['gse'] = gse.name
                 fold_change['perm'] = perm
+
                 results_list.append(fold_change.reset_index())
 
-    return pd.concat(results_list)
+    results = pd.concat(results_list) if results_list else pd.DataFrame()
+    debug and results.to_csv("%s.fc.csv" % debug)
+    return results
 
 
 @log_durations(logger.debug)
