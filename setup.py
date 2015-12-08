@@ -1,7 +1,7 @@
 import setuptools
 
 setuptools.setup(
-    name = 'star_api',
+    name = 'starapi',
     url = 'https://github.com/idrdex/star_api',
-    packages = ['star_api'],
+    packages = ['starapi'],
     )
