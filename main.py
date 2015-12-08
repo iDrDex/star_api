@@ -1,6 +1,19 @@
-__author__ = 'dex'
+__author__ = 'dex', 'dhimmel'
+
+import sys
+import os
+import shutil
+import urllib2
+import StringIO
+import gzip
+import re
+
 from funcy import cat, first, re_all
-import conf, urllib2, os, shutil, gzip, psycopg2, psycopg2.extras, pandas as pd, numpy as np, re
+import psycopg2
+import psycopg2.extras
+import pandas as pd
+import numpy as np
+import conf
 
 ###connect to DB###
 import db_conf #PRIVATE
@@ -72,15 +85,12 @@ def get_data(series_id, platform_id, impute = False):
             if attempt:
                 raise
             matrixFilename = get_matrix_filename(series_id, platform_id)
-    # data.to_csv("data.csv")
     data = clean_data(data) #drop samples
-    # data.to_csv("clean.data.csv")
     if len(data.columns) == 1:
         data = data.dropna()
     elif impute:
         data = impute_data(data)
     data = log_data(data) #logc
-    # data.to_csv("log.data.csv")
 
     data.index = data.index.astype(str)
     data.index.name = "probe"
@@ -142,13 +152,6 @@ def query_data(gse_name, gpl_name, impute=False):
     data = get_data(series_id, platform_id, impute)
     # data.columns = data.columns + "_" + gpl_name + "_" + gse_name
     return data
-
-# def query_data(gse_name, gpl_name):
-#     series_id = query_record(gse_name, "series", "gse_name")['id']
-#     platform_id = query_record(gpl_name, "platform", "gpl_name")['id']
-#     data = get_data(series_id, platform_id)
-#     return data
-
 
 def query_tags_annotations(tokens):
     df = pd.read_sql('''
@@ -248,22 +251,10 @@ def log_data(df):
 def is_logged(df):
     return np.max(df.values) < 10
 
-# def is_logged(data):
-#     return True if (data.std() < 10).all() else False
-#
-#
-# def log_data(data):
-#     # if (data.var() > 10).all():
-#     if is_logged(data):
-#         return data
-#     return translate_negative_cols(np.log2(data))
-import rpy2.robjects as robjects
-
-r = robjects.r
-import pandas.rpy.common as com
-
 def impute_data(data):
-    # data.to_csv("data.csv")
+    import rpy2.robjects as robjects
+    r = robjects.r
+    import pandas.rpy.common as com
     r.library("impute")
     r_data = com.convert_to_r_matrix(data)
     r_imputedData = r['impute.knn'](r_data)
@@ -287,12 +278,6 @@ def translate_negative_cols(data):
     """Translate the minimum value of each col to 1"""
     data = data.replace([np.inf, -np.inf], np.nan) #replace infinities
     return data + np.abs(np.min(data)) + 1
-    # for sample in data.columns:
-    # sampleMin = data[sample].min()
-    # if sampleMin < 1:
-    # absMin = abs(sampleMin)
-    # data[sample] = data[sample].add(absMin + 1)
-    # return data
 
 def clean_data(data):
     """convenience function to trannslate the data before analysis"""
@@ -300,8 +285,3 @@ def clean_data(data):
         # data = log_data(translate_negative_cols(data))
         data = drop_missing_samples(data)
     return data
-
-if __name__ == "__main__":
-    data = query_data("GSE19617", "GPL6480", impute = True)
-    # gene_data = query_gene_data("GSE4058","GPL2778")
-
