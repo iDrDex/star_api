@@ -1,11 +1,14 @@
 import logging
+import re
 
-from main import *
 from easydict import EasyDict
 from funcy import first, log_durations, imap, memoize, cat, re_all
 import numpy as np
 import pandas as pd
 import scipy.stats as stats
+
+import main
+from main import conn, cursor, get_data, log_data
 
 #### create logger
 logger = logging.getLogger(__name__)
@@ -209,16 +212,6 @@ def get_gene_fold_change(gse, debug=False, nperm=0, mygene_filter = None):
     return pd.concat(results_list)
 
 
-# COLUMNS = {
-#     'sample__id': 'sample_id',
-#     'sample__gsm_name': 'gsm_name',
-#     'annotation': 'annotation',
-#     'serie_annotation__series__id': 'series_id',
-#     'serie_annotation__platform__id': 'platform_id',
-#     'serie_annotation__platform__gpl_name': 'gpl_name',
-#     'serie_annotation__tag__tag_name': 'tag_name',
-# }
-
 @log_durations(logger.debug)
 def get_analysis_df(case_query, control_query, modifier_query=""):
     # Fetch all relevant data
@@ -300,8 +293,6 @@ def query_record(id, table, id_field="id"):
 def series_gse_name(series_id):
     return query_record(series_id, "series")['gse_name']
 
-    # return Series.objects.values_list('id', 'gse_name')
-
 # @make_lookuper
 def platform_gpl_name(platform_id):
     # return Platform.objects.values_list('id', 'gpl_name')
@@ -311,98 +302,11 @@ def platform_gpl_name(platform_id):
 def query_gsm_names(gse_name):
     sql = "select * from series inner join sample on series.id = series_id where gse_name = '%s'"%gse_name
     return list(pd.read_sql(sql, conn)['gsm_name'])
-# def __getMatrixNumHeaderLines(inStream):
-#     p = re.compile(r'^"ID_REF"')
-#     for i, line in enumerate(inStream):
-#         if p.search(line):
-#             return i
-#
-
-# def matrix_filenames(series_id, platform_id):
-#     gse_name = series_gse_name(series_id)
-#     yield "%s/%s_series_matrix.txt.gz" % (gse_name, gse_name)
-#
-#     gpl_name = platform_gpl_name(platform_id)
-#     yield "%s/%s-%s_series_matrix.txt.gz" % (gse_name, gse_name, gpl_name)
-
-
-# def get_matrix_filename(series_id, platform_id):
-#     filenames = list(matrix_filenames(series_id, platform_id))
-#     mirror_filenames = (os.path.join(conf.SERIES_MATRIX_MIRROR, filename) for filename in filenames)
-#     mirror_filename = first(filename for filename in mirror_filenames if os.path.isfile(filename))
-#     if mirror_filename:
-#         return mirror_filename
-#
-#     for filename in filenames:
-#         logger.info('Loading URL %s...' % (conf.SERIES_MATRIX_URL + filename))
-#         try:
-#             res = urllib2.urlopen(conf.SERIES_MATRIX_URL + filename)
-#         except urllib2.URLError:
-#             pass
-#         else:
-#             mirror_filename = os.path.join(conf.SERIES_MATRIX_MIRROR, filename)
-#             logger.info('Cache to %s' % mirror_filename)
-#
-#             directory = os.path.dirname(mirror_filename)
-#             if not os.path.exists(directory):
-#                 os.makedirs(directory)
-#             with open(mirror_filename, 'wb') as f:
-#                 shutil.copyfileobj(res, f)
-#
-#             return mirror_filename
-#
-#     raise LookupError("Can't find matrix file for series %s, platform %s"
-#                       % (series_id, platform_id))
-
-
-# @log_durations(logger.debug)
-# def get_data(series_id, platform_id):
-#     matrixFilename = get_matrix_filename(series_id, platform_id)
-#     # setup data for specific platform
-#     for attempt in (0, 1):
-#         try:
-#             headerRows = __getMatrixNumHeaderLines(gzip.open(matrixFilename))
-#             na_values = ["null", "NA", "NaN", "N/A", "na", "n/a"]
-#             data = pd.io.parsers.read_table(gzip.open(matrixFilename),
-#                                             skiprows=headerRows,
-#                                             index_col=["ID_REF"],
-#                                             na_values=na_values,
-#                                             lineterminator='\n',
-#                                             engine='c')
-#             # Drop last line
-#             data.to_csv("data.1.csv")
-#             data = data.drop(data.index[-1]).dropna()
-#             break
-#         except IOError as e:
-#             # In case we have cirrupt file
-#             logger.error("Failed loading %s: %s" % (matrixFilename, e))
-#             os.remove(matrixFilename)
-#             if attempt:
-#                 raise
-#             matrixFilename = get_matrix_filename(series_id, platform_id)
-#
-#     data.index = data.index.astype(str)
-#     data.index.name = "probe"
-#     data.to_csv("data.2.csv")
-#
-#     for column in data.columns:
-#         data[column] = data[column].astype(np.float64)
-#
-#
-#     return data
-
 
 @log_durations(logger.debug)
 def get_probes(platform_id):
     sql = "select * from platform_probe where platform_id = %s"
     return pd.read_sql(sql, conn, "probe", params=(platform_id,))
-#     df = PlatformProbe.objects.filter(platform=platform_id).order_by('id').to_dataframe()
-#     # df = db(Platform_Probe.platform_id == platform_id).select(processor=pandas_processor)
-#     df.columns = [col.lower().replace("platform_probe.", "") for col in df.columns]
-#     df.probe = df.probe.astype(str)  # must cast probes as str
-#     df = df.set_index('probe')
-#     return df
-
 
 class Gse:
     def __init__(self, name, samples, gpl2data, gpl2probes):
