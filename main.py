@@ -125,6 +125,7 @@ def get_gene_data(series_id, platform_id):
 
 def query_record(id, table, id_field="id"):
     sql = """select * from %s where %s """ % (table, id_field) + """= %s"""
+    # print sql
     cursor.execute(sql, (id,))
     return cursor.fetchone()
 

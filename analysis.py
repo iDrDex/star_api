@@ -512,6 +512,17 @@ class MetaAnalyser:
     t_ppf = staticmethod(memoize(stats.t.ppf))
 
     def getConfidenceIntervals(self, TE, TE_se, level=.95, df=None):
+        """Gets confidence intervals"""
+        if not TE:
+            return EasyDict(TE=None,
+                  se=None,
+                  level=level,
+                  df=None,
+                  pval=None,
+                  zscore=None,
+                  upper=None,
+                  lower=None)
+
         alpha = 1 - level
         zscore = TE / TE_se
         if not df:
@@ -555,18 +566,25 @@ class MetaAnalyser:
         return pd.Series(na, index=gene_stats.index)
 
     def __init__(self, gene_stats):
+        # print gene_stats.probe
         TE = gene_stats.caseDataMu.values - gene_stats.controlDataMu.values
 
         # (7) Calculate results for individual studies
         TE_se = self.get_TE_se(gene_stats)
         w_fixed = (1 / TE_se ** 2).fillna(0)
-
-        TE_fixed = np.average(TE, weights=w_fixed)
-        TE_fixed_se = np.sqrt(1 / sum(w_fixed))
+        if w_fixed.sum() == 0:
+            TE_fixed = TE_fixed_se = None
+        else:
+            TE_fixed = np.average(TE, weights=w_fixed)
+            TE_fixed_se = np.sqrt(1 / sum(w_fixed))
         self.fixed = self.getConfidenceIntervals(TE_fixed, TE_fixed_se)
 
-        self.Q = sum(w_fixed * (TE - TE_fixed) ** 2)
-        self.Q_df = TE_se.dropna().count() - 1
+        if TE_fixed is None:
+            self.Q = None
+            self.Q_df = None
+        else:
+            self.Q = sum(w_fixed * (TE - TE_fixed) ** 2)
+            self.Q_df = TE_se.dropna().count() - 1
 
         self.cVal = sum(w_fixed) - sum(w_fixed ** 2) / sum(w_fixed)
         if self.Q <= self.Q_df:
@@ -576,8 +594,12 @@ class MetaAnalyser:
         self.tau = np.sqrt(self.tau2)
         self.tau2_se = None
         w_random = (1 / (TE_se ** 2 + self.tau2)).fillna(0)
-        TE_random = np.average(TE, weights=w_random)
-        TE_random_se = np.sqrt(1 / sum(w_random))
+        if w_random.sum() == 0:
+            TE_random = TE_random_se = None
+        else:
+            TE_random = np.average(TE, weights=w_random)
+            TE_random_se = np.sqrt(1 / sum(w_random))
+
         self.random = self.getConfidenceIntervals(TE_random, TE_random_se)
 
         # Prediction interval
@@ -591,15 +613,19 @@ class MetaAnalyser:
                                 zscore=None,
                                 upper=None,
                                 lower=None)
-        if self.k >= 3:
+        if self.k >= 3 and TE_random_se:
             TE_predict_se = np.sqrt(TE_random_se ** 2 + self.tau2)
             self.predict = self.getConfidenceIntervals(TE_random, TE_predict_se, self.level_predict,
                                                        self.k - 2)
 
         # Calculate H and I-Squared
         self.level_comb = 0.95
-        self.H = self.calcH(self.Q, self.Q_df, self.level_comb)
-        self.I2 = self.isquared(self.H)
+        if self.Q is None:
+            self.H = None
+            self.I2 = None
+        else:
+            self.H = self.calcH(self.Q, self.Q_df, self.level_comb)
+            self.I2 = self.isquared(self.H)
 
     def get_results(self):
         return dict(
@@ -631,13 +657,13 @@ class MetaAnalyser:
 
             C=self.cVal,
 
-            H=self.H.TE,
-            H_lower=self.H.lower,
-            H_upper=self.H.upper,
+            H=self.H.TE if self.H else None,
+            H_lower=self.H.lower if self.H else None,
+            H_upper=self.H.upper if self.H else None,
 
-            I2=self.I2.TE,
-            I2_lower=self.I2.lower,
-            I2_upper=self.I2.upper,
+            I2=self.I2.TE if self.I2 else None,
+            I2_lower=self.I2.lower if self.I2 else None,
+            I2_upper=self.I2.upper if self.I2 else None,
 
             Q=self.Q,
             Q_df=self.Q_df,
@@ -827,20 +853,22 @@ def combat(df):
 
 
 if __name__ == "__main__":
-    # queries = pd.read_table("https://raw.githubusercontent.com/dhimmel/star_api/master/data/files.tsv")
-    # for i, row in queries.iterrows():
-    #     analysis = EasyDict(
-    #         analysis_name = row['slim_name'],
-    #             case_query = row['case_query'],
-    #             control_query = row['control_query'],
-    #             modifier_query = "",
-    #             min_samples = 3
-    #         )
-    #     print analysis
-    #     fc, analysis = perform_analysis(analysis=analysis, nperm=10)
-    #     analysis.to_csv("%s.csv"%row['slim_name'])
-    #
-    # 1/0
+    queries = pd.read_table("https://raw.githubusercontent.com/dhimmel/stargeo/master/data/files.tsv")
+    for i, row in queries.iterrows():
+        if  row['balanced_permutation.tsv.gz']:
+           continue
+        analysis = EasyDict(
+            analysis_name = row['slim_name'],
+                case_query = row['case_query'],
+                control_query = row['control_query'],
+                modifier_query = "",
+                min_samples = 3
+            )
+        print analysis
+        fc, results, permutations = perform_analysis(analysis=analysis, nperm=0)
+        results.to_csv("%s.csv"%row['slim_name'])
+
+    1/0
 
     # tokens = "MB_Group4","MB_Group3", "MB_SHH", "MB_WNT", "MB_unlabeled"
     # labels = query_tags_annotations(tokens)
