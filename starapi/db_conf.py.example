@@ -1,0 +1,1 @@
+DB_PARAMATERS = "postgres://postgres@localhost/star"
