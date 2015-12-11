@@ -1,14 +1,19 @@
 import logging
+import os
 import re
 
 from easydict import EasyDict
 from funcy import first, log_durations, imap, memoize, cat, re_all
 import numpy as np
 import pandas as pd
+import rpy2.robjects as robjects
+r = robjects.r
 import scipy.stats as stats
 
-import main
-from main import conn, cursor, get_data, log_data
+from .main import (
+    conn, cursor, get_data, log_data, query_gene_data, query_samples, drop_missing_samples)
+from . import conf
+
 
 #### create logger
 logger = logging.getLogger(__name__)
@@ -18,7 +23,7 @@ def sanitize(filename):
     return "".join([c for c in filename if c.isalpha() or c.isdigit() or c==' ']).rstrip()
 
 @log_durations(logger.debug)
-def get_balanced_permutations(balanced, permutations):
+def get_balanced_permutations(analysis, balanced, permutations):
     balanced_permutations = balanced
     if not permutations.empty:
         logger.info('Estimating significance by permutation for %s' % analysis.analysis_name)
@@ -135,7 +140,7 @@ def perform_analysis(analysis, debug=False, impute = False, nperm = 0, mygene_fi
                     permutation = balanced_perm[['random_TE', 'fixed_TE']]
                     permutation['perm'] = perm
                     permutations = pd.concat([permutations, permutation])
-        balanced_permutations = get_balanced_permutations(balanced, permutations)
+        balanced_permutations = get_balanced_permutations(analysis, balanced, permutations)
 
     logger.info('DONE %s analysis', analysis.analysis_name)
     return df, fold_change, balanced_permutations, permutations
@@ -686,6 +691,8 @@ def save_upcs(gsm_names):
         query_upc(gsm_name)
 
 def combat(df):
+    import pandas.rpy.common as com
+
     names = df[['gse_name', 'gpl_name']].drop_duplicates().to_records(index=False)
     # drop genes with missing data
     df['code'] = df.gsm_name + "_" + df.gpl_name + "_" + df.gse_name
@@ -731,5 +738,3 @@ def combat(df):
         print analysis
         fc, results, permutations = perform_analysis(analysis=analysis, nperm=0)
         results.to_csv("%s.csv"%row['slim_name'])
-
-    1/0
