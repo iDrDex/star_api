@@ -2,6 +2,11 @@
 
 For development, clone or download-and-extract the repository. Then run `pip install -e .` from the repository's root directory. The `-e` flag specifies [editable](https://pythonhosted.org/setuptools/setuptools.html#development-mode) mode, so updating the source updates your installation.
 
+The current master branch can also be installed directly from GitHub using:
+
+```
+pip install git+git://github.com/idrdex/star_api.git@master
+```
 
 ## Database configuration
 
