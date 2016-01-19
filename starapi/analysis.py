@@ -692,7 +692,7 @@ def save_upcs(gsm_names):
         print gsm_name
         query_upc(gsm_name)
 
-def combat(df):
+def combat(df, annotation_col="sample_class"):
     import pandas.rpy.common as com
 
     names = df[['gse_name', 'gpl_name']].drop_duplicates().to_records(index=False)
@@ -710,11 +710,11 @@ def combat(df):
     samples = df \
         .ix[m.columns] \
         .reset_index()
-    samples.to_csv("samples.csv")
+    # samples.to_csv("samples.csv")
     edata = com.convert_to_r_matrix(m)
     batch = robjects.StrVector(samples.gse_name + '_' +  samples.gpl_name)
     # pheno = robjects.FactorVector(samples.sample_class)
-    pheno = robjects.FactorVector(samples.annotation)
+    pheno = robjects.FactorVector(samples[annotation_col])
     r.library("sva")
     fmla = robjects.Formula('~pheno')
     # fmla.environment['pheno'] = r['as.factor'](pheno)
@@ -725,18 +725,3 @@ def combat(df):
     combat_matrix.index = m.index
     combat_matrix.columns = m.columns
     return combat_matrix, samples
-
-    queries = pd.read_table("https://raw.githubusercontent.com/dhimmel/stargeo/master/data/files.tsv")
-    for i, row in queries.iterrows():
-        if  row['balanced_permutation.tsv.gz']:
-           continue
-        analysis = EasyDict(
-            analysis_name = row['slim_name'],
-                case_query = row['case_query'],
-                control_query = row['control_query'],
-                modifier_query = "",
-                min_samples = 3
-            )
-        print analysis
-        fc, results, permutations = perform_analysis(analysis=analysis, nperm=0)
-        results.to_csv("%s.csv"%row['slim_name'])
