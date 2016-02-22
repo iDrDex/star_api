@@ -189,6 +189,8 @@ def get_gene_fold_change(gse, debug=False, nperm=0, mygene_filter=None):
             data = data.ix[mygene_probes.ix[mygene_filter].probe]
         else:
             data = data.ix[mygene_probes.probe]
+        if data.empty:
+            continue
         data = normalize_quantiles(log_data(data))
         sample_class = df.ix[data.columns].sample_class
 
@@ -717,8 +719,9 @@ def combat(df, annotation_col="sample_class"):
     pheno = robjects.FactorVector(samples[annotation_col])
     r.library("sva")
     fmla = robjects.Formula('~pheno')
-    # fmla.environment['pheno'] = r['as.factor'](pheno)
     fmla.environment['pheno'] = pheno
+    # fmla = robjects.Formula('~1')
+    # fmla.environment['pheno'] = r['as.factor'](pheno)
     mod = r['model.matrix'](fmla)
     r_combat_edata = r.ComBat(dat=edata, batch=batch, mod=mod)
     combat_matrix = pd.DataFrame(np.asmatrix(r_combat_edata))
