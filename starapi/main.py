@@ -20,6 +20,7 @@ import db_conf #PRIVATE
 conn = psycopg2.connect(db_conf.DB_PARAMATERS)
 cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
+
 def __getMatrixNumHeaderLines(inStream):
     import re
 
@@ -62,11 +63,13 @@ def get_matrix_filename(series_id, platform_id):
 
             return mirror_filename
 
-    raise LookupError("Can't find matrix file for series %s, platform %s"
-                      % (series_id, platform_id))
+    print 'Failed loading matrix for serie %s, platform %s' % (series_id, platform_id)
+
 
 def get_data(series_id, platform_id, impute = False):
     matrixFilename = get_matrix_filename(series_id, platform_id)
+    if not matrixFilename:
+        return pd.DataFrame()
     # setup data for specific platform
     for attempt in (0, 1):
         try:
@@ -241,7 +244,7 @@ def get_annotations(case_query, control_query, modifier_query=""):
 import numexpr as ne
 
 def log_data(df):
-    if is_logged(df):
+    if df.empty or is_logged(df):
         return df
 
     data = df.values

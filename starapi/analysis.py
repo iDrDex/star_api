@@ -84,7 +84,7 @@ def perform_analysis(analysis, debug=False, impute = False, nperm = 0, mygene_fi
     df = filter_sources(df, query, 'as single-class')
 
     # Check for minimum number of samples
-    if analysis.min_samples:
+    if not df.empty and analysis.min_samples:
         counts = df.groupby(['series_id', 'platform_id']).sample_class.value_counts().unstack()
         query = (counts[0] >= analysis.min_samples) & (counts[1] >= analysis.min_samples)
         df = filter_sources(df, query, 'by min samples')
@@ -128,7 +128,11 @@ def perform_analysis(analysis, debug=False, impute = False, nperm = 0, mygene_fi
         # logger.info('Meta analysis of real data for %s' % analysis.analysis_name)
         with log_durations(logger.debug, 'meta analysis of real data for %s' % analysis.analysis_name):
             balanced = get_full_meta(fold_change.query("""perm == 0"""), debug=debug)
+            if balanced is None:
+                logger.error("FAIL Got empty meta-analysis")
+                return df, fold_change, None, None
             debug and balanced.to_csv("%s.meta.csv" % debug)
+
         # logger.info('Meta-Analyzing of permutations for %s', analysis.analysis_name)
         with log_durations(logger.debug, 'meta analysis of permutations for %s' % analysis.analysis_name):
             permutations = pd.DataFrame()
@@ -344,6 +348,9 @@ def get_full_meta(fold_change,  debug=False):
         metaAnalysis['mygene_sym'] = mygene_sym
         metaAnalysis['mygene_entrez'] = mygene_entrez
         all.append(metaAnalysis)
+
+    if not all:
+        return
 
     full_meta_analysis = pd.DataFrame(all).set_index(['mygene_sym', 'mygene_entrez'])
     debug and full_meta_analysis.to_csv('full_meta_analysis.csv')

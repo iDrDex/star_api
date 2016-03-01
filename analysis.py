@@ -112,11 +112,13 @@ mygene_filter = None
 nperm = 3
 basename = "%s.%s_perm"%(analysis.analysis_name, nperm)
 
-fc, results, permutations = perform_analysis(analysis=analysis,
+fc, results, permutations, _ = perform_analysis(analysis=analysis,
                                              impute=False,
                                              nperm=nperm,
                                              mygene_filter=mygene_filter,
                                              debug=basename)
-results.to_csv(basename + ".results.csv")
-# fc.to_csv(basename + ".fc.csv")
-permutations.to_csv(basename + ".perm.csv")
+if results is not None:
+    results.to_csv(basename + ".results.csv")
+    # fc.to_csv(basename + ".fc.csv")
+if permutations is not None:
+    permutations.to_csv(basename + ".perm.csv")
